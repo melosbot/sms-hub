@@ -22,14 +22,14 @@ FROM python:3.12-alpine AS deps
 RUN apk add --no-cache binutils              # strip 调试符号需要
 WORKDIR /install
 COPY core/requirements.txt .
+# 裁剪运行时不需要的:字节码缓存 / 测试目录 / 类型存根(.pyi)/ CLI 脚本;并 strip .so 调试符号。
+# 注意:RUN 的 \ 续行序列里不能写 # 注释(# 会吞掉行尾,导致续行中断 → Dockerfile parse error)。
 RUN pip install --no-cache-dir --no-compile --prefix=/install -r requirements.txt \
- && # 运行时用不到的全部裁掉:字节码缓存、测试目录、类型存根(.pyi)、CLI 入口脚本
-    find /install -depth \( -name "__pycache__" -o -name tests -o -name test \) -exec rm -rf {} + \
+ && find /install -depth \( -name "__pycache__" -o -name tests -o -name test \) -exec rm -rf {} + \
  && find /install -name "*.pyc" -delete \
  && find /install -name "*.pyi" -delete \
  && rm -rf /install/bin \
- && # strip 共享库调试符号(pydantic-core 等 Rust/C 扩展的 .so)
-    find /install -name "*.so" -exec strip --strip-unneeded {} + 2>/dev/null || true
+ && find /install -name "*.so" -exec strip --strip-unneeded {} + 2>/dev/null || true
 
 # ── Stage 2:运行时(最小)─────────────────────────────────────────
 FROM python:3.12-alpine
