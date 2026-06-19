@@ -136,7 +136,7 @@ export function MessageDetail({ id, onClose }: { id: number | null; onClose: () 
                       <span>{n.channel}</span>
                       <span className="flex items-center gap-2 text-muted-foreground">
                         <span>{notifyStatus(n.status)}</span>
-                        <span className="text-xs">×{n.attempts}</span>
+                        {n.attempts > 0 && <span className="text-xs">重试 {n.attempts} 次</span>}
                       </span>
                     </div>
                   ))}
