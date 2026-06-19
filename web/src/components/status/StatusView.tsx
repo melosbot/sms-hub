@@ -32,7 +32,7 @@ import { SimSwitcher } from "@/components/shell/SimSwitcher"
 import { useSim } from "@/components/shell/SimProvider"
 import { useStatus } from "@/hooks/queries"
 import { useClearBuffer, usePatchSim, useStatusRefresh } from "@/hooks/mutations"
-import { ago, ceregLabel, displayMac, formatUptime, signalLabel, signalLevel, wifiSignalLevel } from "@/lib/format"
+import { ago, carrierName, ceregLabel, displayMac, formatUptime, signalLabel, signalLevel, wifiSignalLevel } from "@/lib/format"
 import { errorToast, successToast } from "@/lib/toast"
 import { cn } from "@/lib/utils"
 
@@ -196,7 +196,7 @@ function StatusBody({ simId, multiple }: { simId: string; multiple: boolean }) {
                 {/* 卡片：身份 + 蜂窝网络 */}
                 <div className="grid grid-cols-2 gap-x-4 gap-y-3 sm:grid-cols-3">
                   <Stat label="本机号码" value={modem?.msisdn} />
-                  <Stat label="运营商" value={modem?.operator} />
+                  <Stat label="运营商" value={carrierName(modem?.operator)} />
                   <Stat label="注册状态" value={ceregLabel(modem?.cereg)} />
                   <Stat
                     label="信号"

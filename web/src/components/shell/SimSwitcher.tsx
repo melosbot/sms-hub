@@ -8,11 +8,12 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { useSim } from "@/components/shell/SimProvider"
+import { carrierName } from "@/lib/format"
 import type { SimView } from "@/lib/types"
 
 function simLabel(s: SimView): string {
   const main = s.name || s.msisdn || `IMSI …${s.imsi_tail}` || s.sim_id
-  return s.operator ? `${main} · ${s.operator}` : main
+  return s.operator ? `${main} · ${carrierName(s.operator)}` : main
 }
 
 /** 当前卡片切换器：仅多张启用卡时显示（docs/guide.md §5.2 单卡自动选中）。 */
