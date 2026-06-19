@@ -144,7 +144,7 @@ ConcatSms concatBuffer[MAX_CONCAT_MESSAGES];
 String jsonEscape(const String& str);
 bool sendATandWaitOK(const char* cmd, unsigned long timeout);
 bool sendSMS(const char* phoneNumber, const char* message);
-void processSmsContent(const char* sender, const char* text, const char* timestamp, bool complete);
+void processSmsContent(const char* sender, const char* text, const char* timestamp, bool complete, bool isMms = false);
 bool processPduLine(const String& pduLine);
 bool handleModemUrcLine(String& line);
 String assembleConcatSms(int slot);
@@ -1223,7 +1223,7 @@ void checkConcatTimeout() {
 }
 
 // ───────────────────────── 短信内容入口 ─────────────────────────
-void processSmsContent(const char* sender, const char* text, const char* timestamp, bool complete, bool isMms = false) {
+void processSmsContent(const char* sender, const char* text, const char* timestamp, bool complete, bool isMms) {
   Serial.println("=== 收到短信 ===");
   Serial.printf("发送者: %s\n", sender);
   Serial.printf("时间戳: %s\n", timestamp);
