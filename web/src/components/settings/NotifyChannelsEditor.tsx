@@ -171,8 +171,22 @@ function NotifyChannelsForm({
     setEditingId(id)
   }
 
+  // 删除即提交保存:列表层无单独「保存」按钮,删完必须立即持久化,否则刷新会复活。
+  // 失败时回滚到删除前,避免 UI 与后端不一致。
   const removeChannel = (id: string) => {
-    setChannels((prev) => prev.filter((c) => c.id !== id))
+    const target = channels.find((c) => c.id === id)
+    const next = channels.filter((c) => c.id !== id)
+    setChannels(next)
+    save.mutate(
+      { notify_channels: next, tg_manage_enabled: tgManage },
+      {
+        onSuccess: () => successToast(`已删除「${target?.name ?? "渠道"}」`),
+        onError: (e) => {
+          setChannels(channels)
+          errorToast(e, "删除失败,请重试")
+        },
+      },
+    )
     setEditingId(null)
     setDeletingId(null)
   }
@@ -232,7 +246,7 @@ function NotifyChannelsForm({
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>删除「{deletingChannel?.name}」渠道？</AlertDialogTitle>
-            <AlertDialogDescription>将从通知渠道中移除，保存后生效。</AlertDialogDescription>
+            <AlertDialogDescription>确认后将立即删除该通知渠道。</AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>取消</AlertDialogCancel>
