@@ -360,7 +360,7 @@ async def device_loop(manager, runtime):
             if runtime.base_url:
                 n = await poll_device(manager, runtime)
                 if n:
-                    log.info("设备 %s 拉取入库 %d 条新短信", runtime.mac, n)
+                    log.info("设备 %s 拉取入库 %d 条新短信", client.display_mac(runtime.mac), n)
                 if runtime._alerted_down:
                     runtime._alerted_down = False
                     runtime.consecutive_fails = 0

@@ -18,6 +18,8 @@ DEVICE_TOKEN = os.getenv("DEVICE_TOKEN", "").strip() or (
     DEVICE_URL.rsplit("/", 1)[-1] if DEVICE_URL else ""
 )
 
+# 日志级别(默认 INFO;排障设 DEBUG)。应用与 uvicorn 共用,见 infra/logging_setup.py。
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 POLL_INTERVAL = int(os.getenv("POLL_INTERVAL", "60"))
 ALERT_CONSECUTIVE_FAILS = int(os.getenv("ALERT_CONSECUTIVE_FAILS", "3"))
 

@@ -139,7 +139,7 @@ async def process_once(limit: int = 3) -> int:
                     " last_error=?, next_attempt_ts=? WHERE id=?",
                     (attempts, err, now + delay, job["id"]),
                 )
-                log.info("出站短信 #%s 重试排队(第%d次): %s", job["id"], attempts, err)
+                log.debug("出站短信 #%s 重试排队(第%d次): %s", job["id"], attempts, err)
         await db.db().commit()
         events.publish({"type": "outbound", "sim_id": sim_id,
                         "device_mac": mac, "id": job["id"]})

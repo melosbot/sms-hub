@@ -542,7 +542,7 @@ async def worker():
                         "UPDATE notify_jobs SET status='ok', last_error='' WHERE id=?",
                         (job["id"],),
                     )
-                    log.info("通知送达 #%s 通道 %s", job["id"], job["channel"])
+                    log.debug("通知送达 #%s 通道 %s", job["id"], job["channel"])
                 else:
                     attempts = job["attempts"] + 1
                     if attempts >= MAX_ATTEMPTS:
@@ -571,7 +571,7 @@ async def worker():
                             " next_attempt_ts=?, last_error=? WHERE id=?",
                             (attempts, now + _retry_delay(attempts), err, job["id"]),
                         )
-                        log.info("通知重试 #%s(第%d次): %s", job["id"], attempts, err)
+                        log.debug("通知重试 #%s(第%d次): %s", job["id"], attempts, err)
                 await db.db().commit()
 
             # 有任务刚处理过就快轮,否则等唤醒/兜底 5s

@@ -192,7 +192,7 @@ class DeviceManager:
                 self._schedule_pull(rt)
                 pull_scheduled = True
 
-        log.info("webhook mac=%s event=%s pull=%s", mac, event or "?", pull_scheduled)
+        log.debug("webhook mac=%s event=%s pull=%s", mac, event or "?", pull_scheduled)
         return {"ok": True, "pull_scheduled": pull_scheduled}
 
     # ── 身份:sim_id 派生与临时卡合并(D3)──

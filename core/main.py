@@ -7,12 +7,13 @@ import os
 from pathlib import Path
 
 import uvicorn
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.staticfiles import StaticFiles
 
 from core.notify import commands
 from core.infra import config
 from core.infra import db
+from core.infra import logging_setup
 from core.device import client as device_client
 from core.device import manager as device_manager
 from core.device import keepalive
@@ -29,11 +30,7 @@ from core.app.routes import send
 from core.app.routes import status
 from core.app.routes import webhook
 
-logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s %(levelname)s [%(name)s] %(message)s"
-)
-logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
-logging.getLogger("httpx").setLevel(logging.WARNING)
+logging_setup.configure()
 log = logging.getLogger("hub")
 
 # Web UI 由 web/ 构建产物(Vite + React + shadcn)提供,是 core 之外的独立前端项目。
@@ -75,6 +72,17 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="sms-hub", lifespan=lifespan)
 
 
+@app.middleware("http")
+async def _log_http_errors(request: Request, call_next):
+    """正常 2xx 静默;仅 ≥400 记一条与应用日志同格式的访问日志(替代 uvicorn access log)。"""
+    response = await call_next(request)
+    if response.status_code >= 400:
+        peer = request.client.host if request.client else "?"
+        log.warning("%s %s → %d(来自 %s)", request.method, request.url.path,
+                    response.status_code, peer)
+    return response
+
+
 @app.get("/api/health")
 async def health():
     return {"ok": True}
@@ -101,4 +109,5 @@ else:  # pragma: no cover - 开发期尚未构建前端时给出明确提示
 
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=config.LISTEN_PORT)
+    uvicorn.run(app, host="0.0.0.0", port=config.LISTEN_PORT,
+                log_config=logging_setup.build_log_config(), access_log=False)
