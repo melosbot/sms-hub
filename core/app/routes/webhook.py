@@ -29,4 +29,8 @@ async def hook(token: str, request: Request):
     try:
         return await device_manager.get().handle_webhook(body, peer)
     except WebhookError as e:
+        # 只记诊断用字段(mac/event/ip/port);webhook body 可能携带 modem.imsi
+        # (boot/hello/heartbeat),按"完整 IMSI 不入日志"铁律绝不整包打印。
+        safe = {k: body.get(k) for k in ("mac", "event", "ip", "port") if k in body}
+        log.warning("webhook 拒绝(400):%s | 字段=%s(来自 %s)", e, safe, peer)
         raise HTTPException(status_code=400, detail=str(e))
