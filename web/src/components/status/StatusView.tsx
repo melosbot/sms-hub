@@ -58,7 +58,7 @@ function ConnCell({
     <div className="flex items-center gap-2">
       <span className={cn("size-2 rounded-full transition-colors", on ? "bg-online" : "bg-muted-foreground/40")} />
       <span className="text-sm">{label}</span>
-      <span className="ml-auto text-xs text-muted-foreground tabular-nums">{ago(ageS)}</span>
+      <span className="ml-auto text-xs text-muted-foreground">{ago(ageS)}</span>
     </div>
   )
 }

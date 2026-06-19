@@ -27,22 +27,19 @@ import { useMessageDetail } from "@/hooks/queries"
 import { useDeleteMessage, useSend } from "@/hooks/mutations"
 import { copyText, estimateParts, notifyStatus } from "@/lib/format"
 import { errorToast, successToast } from "@/lib/toast"
-import { cn } from "@/lib/utils"
 
 function Meta({
   label,
   value,
-  mono,
 }: {
   label: string
   value?: string | number | null
-  mono?: boolean
 }) {
   if (value === undefined || value === null || value === "") return null
   return (
     <div className="flex flex-col gap-0.5">
       <span className="text-xs text-muted-foreground">{label}</span>
-      <span className={cn("break-all text-sm", mono && "font-mono")}>{value}</span>
+      <span className="break-all text-sm">{value}</span>
     </div>
   )
 }
@@ -122,7 +119,7 @@ export function MessageDetail({ id, onClose }: { id: number | null; onClose: () 
 
               <div className="grid grid-cols-2 gap-x-4 gap-y-2">
                 <Meta label="收件卡" value={msg.sim_name || msg.sim_imsi_tail || msg.sim_id} />
-                <Meta label="验证码" value={msg.code || "N/A"} mono />
+                <Meta label="验证码" value={msg.code || "N/A"} />
               </div>
 
               {msg.notify && msg.notify.length > 0 && (
@@ -148,7 +145,7 @@ export function MessageDetail({ id, onClose }: { id: number | null; onClose: () 
               <div className="flex flex-col gap-2">
                 <div className="flex items-center justify-between gap-2">
                   <span className="text-sm font-medium">快捷回复</span>
-                  <span className="text-xs text-muted-foreground tabular-nums">
+                  <span className="text-xs text-muted-foreground">
                     {est.chars} 字 · 约 {est.parts} 条
                   </span>
                 </div>

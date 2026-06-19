@@ -27,7 +27,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
-import { Field, FieldDescription, FieldGroup, FieldLabel } from "@/components/ui/field"
+import { Field, FieldGroup, FieldLabel } from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
 import { useConfig, useContacts, useDevices } from "@/hooks/queries"
@@ -146,7 +146,12 @@ export function ComposeForm() {
             </Field>
 
             <Field>
-              <FieldLabel htmlFor="text">内容</FieldLabel>
+              <div className="flex items-center justify-between gap-2">
+                <FieldLabel htmlFor="text">内容</FieldLabel>
+                <span className="text-xs text-muted-foreground">
+                  {est.chars} 字 · 约 {est.parts} 条{est.ucs2 ? " · 含非 GSM 字符" : ""}
+                </span>
+              </div>
               <Textarea
                 id="text"
                 value={text}
@@ -154,9 +159,6 @@ export function ComposeForm() {
                 rows={4}
                 placeholder="短信内容"
               />
-              <FieldDescription>
-                {est.chars} 字 · 约 {est.parts} 条{est.ucs2 ? " · 含非 GSM 字符" : ""}
-              </FieldDescription>
             </Field>
           </FieldGroup>
         </CardContent>

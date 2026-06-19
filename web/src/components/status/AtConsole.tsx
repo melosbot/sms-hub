@@ -62,7 +62,7 @@ export function AtConsole({ simId }: { simId: string }) {
             onChange={(e) => setCmd(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && run()}
             placeholder="AT 命令"
-            className="min-w-0 flex-1 font-mono"
+            className="min-w-0 flex-1"
           />
           <Button onClick={() => run()} disabled={at.isPending || !cmd.trim()}>
             {at.isPending && <Spinner data-icon="inline-start" />}
@@ -70,7 +70,7 @@ export function AtConsole({ simId }: { simId: string }) {
           </Button>
         </div>
         {resp && (
-          <pre className="max-h-64 overflow-auto whitespace-pre-wrap rounded-control bg-muted p-3 font-mono text-xs">
+          <pre className="max-h-64 overflow-auto whitespace-pre-wrap rounded-control bg-muted p-3 text-xs">
             {resp.response || "(无输出)"}
           </pre>
         )}
