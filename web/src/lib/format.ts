@@ -19,13 +19,13 @@ export function shortTime(dateStr: string): string {
   return dateStr.length >= 16 ? dateStr.slice(5, 16) : dateStr
 }
 
-/** 秒数 → "12s / 5m / 3h / 2d"，负值表示未知。 */
+/** 秒数 → "12 秒前 / 5 分钟前 / 3 小时前 / 2 天前"，负值表示未知。 */
 export function ago(s: number): string {
   if (s == null || s < 0) return "—"
-  if (s < 60) return `${s}s`
-  if (s < 3600) return `${Math.floor(s / 60)}m`
-  if (s < 86400) return `${Math.floor(s / 3600)}h`
-  return `${Math.floor(s / 86400)}d`
+  if (s < 60) return `${s} 秒前`
+  if (s < 3600) return `${Math.floor(s / 60)} 分钟前`
+  if (s < 86400) return `${Math.floor(s / 3600)} 小时前`
+  return `${Math.floor(s / 86400)} 天前`
 }
 
 /** 规范化 mac(小写无分隔) → "AA:BB:CC:DD:EE:FF"（展示统一大写）。 */

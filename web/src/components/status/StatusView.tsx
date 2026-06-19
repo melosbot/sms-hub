@@ -58,7 +58,6 @@ function ConnCell({
     <div className="flex items-center gap-2">
       <span className={cn("size-2 rounded-full transition-colors", on ? "bg-online" : "bg-muted-foreground/40")} />
       <span className="text-sm">{label}</span>
-      <span className="text-xs text-muted-foreground">{on ? "在线" : "离线"}</span>
       <span className="ml-auto text-xs text-muted-foreground tabular-nums">{ago(ageS)}</span>
     </div>
   )
@@ -160,14 +159,14 @@ function StatusBody({ simId, multiple }: { simId: string; multiple: boolean }) {
                 <div className="grid grid-cols-2 gap-3">
                   <ConnCell
                     on={s?.heartbeat_online}
-                    label="心跳"
+                    label="心跳链路"
                     baseAgeS={s?.device_status_age_s}
                     since={dataUpdatedAt}
                     now={now}
                   />
                   <ConnCell
                     on={s?.data_plane_online}
-                    label="数据面"
+                    label="取信链路"
                     baseAgeS={hub?.last_poll_ago_s}
                     since={dataUpdatedAt}
                     now={now}
