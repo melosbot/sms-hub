@@ -214,8 +214,8 @@ function StatusBody({ simId, multiple }: { simId: string; multiple: boolean }) {
                 {/* 设备：硬件 + WiFi + 运行 */}
                 <div className="grid grid-cols-2 gap-x-4 gap-y-3 sm:grid-cols-3">
                   <Stat label="设备 MAC" value={hub?.device_mac ? displayMac(hub.device_mac) : "—"} />
-                  <Stat label="模组型号" value={modem?.model} />
-                  <Stat label="固件" value={device?.fw} />
+                  <Stat label="设备 IP" value={device?.ip} />
+                  <Stat label="设备状态" value={[modem?.model, device?.fw].filter(Boolean).join("/") || "—"} />
                   <Stat label="运行时长" value={formatUptime(device?.uptime_s)} />
                   <Stat label="WiFi SSID" value={device?.wifi_ssid} />
                   <Stat

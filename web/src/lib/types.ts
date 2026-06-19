@@ -34,6 +34,7 @@ export interface DeviceCounters {
 /** 设备状态快照（心跳/boot/hello 携带的完整 body）。 */
 export interface DeviceSnapshot {
   fw?: string
+  ip?: string
   uptime_s?: number
   free_heap?: number
   min_free_heap?: number
