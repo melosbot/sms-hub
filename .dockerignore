@@ -1,0 +1,20 @@
+# Build context is the repo root; keep the Docker image lean.
+**/__pycache__
+**/*.pyc
+**/*.pyo
+.git
+.github
+.claude
+.local
+.venv
+venv
+web/node_modules
+web/dist
+docs
+firmware
+test
+*.md
+.env
+.env.*
+Dockerfile
+.dockerignore

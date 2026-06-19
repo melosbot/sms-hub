@@ -1,0 +1,17 @@
+firmware/config.h
+firmware/bin/
+.local/
+core/data/
+test/demo/data/
+__pycache__/
+.pytest_cache/
+*.pyc
+backups/
+.env
+.mindfs/
+.claude/settings.local.json
+.agents/
+.codex/
+# web/ 前端已纳入版本控制；node_modules/dist 由 web/.gitignore 忽略
+# 冒烟测试截图（生成物）
+test/browser-shots/

@@ -1,0 +1,366 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+RUN_DIR="${DEMO_RUN_DIR:-$SCRIPT_DIR/data}"
+DATA_DIR="$RUN_DIR"
+LOG_DIR="$RUN_DIR"
+PID_DIR="$RUN_DIR"
+ENV_FILE="$RUN_DIR/demo.env"
+
+HUB_PORT="${DEMO_HUB_PORT:-8025}"
+DEVICE_PORT="${DEMO_DEVICE_PORT:-8080}"
+TOKEN="${DEMO_TOKEN:-demo-token-12345678}"
+WEBUI_USER="${DEMO_WEBUI_USER:-admin}"
+WEBUI_PASS="${DEMO_WEBUI_PASS:-demo-pass}"
+POLL_INTERVAL="${DEMO_POLL_INTERVAL:-5}"
+JWT_SECRET="${DEMO_JWT_SECRET:-demo-local-jwt-secret-change-me}"
+
+HUB_URL="http://127.0.0.1:$HUB_PORT"
+DEVICE_URL="http://127.0.0.1:$DEVICE_PORT/$TOKEN"
+
+# 第二台 mock(可选,验证多设备):设置 DEMO_SECOND_DEVICE_PORT 即启用。
+# 默认为 giffgaff(英国 MVNO),与首台中国移动形成对照。
+DEVICE2_PORT="${DEMO_SECOND_DEVICE_PORT:-}"
+DEVICE2_MAC="${DEMO_SECOND_MOCK_MAC:-112233445566}"
+DEVICE2_OPERATOR="${DEMO_SECOND_MOCK_OPERATOR:-giffgaff}"
+DEVICE2_IMSI="${DEMO_SECOND_MOCK_IMSI:-234109876543210}"
+DEVICE2_MSISDN="${DEMO_SECOND_MOCK_MSISDN:-447700900123}"
+DEVICE2_ICCID="${DEMO_SECOND_MOCK_ICCID:-8944112233445566}"
+
+HUB_PID="$PID_DIR/hub.pid"
+DEVICE_PID="$PID_DIR/device.pid"
+DEVICE2_PID="$PID_DIR/device2.pid"
+HUB_LOG="$LOG_DIR/hub.log"
+DEVICE_LOG="$LOG_DIR/device.log"
+DEVICE2_LOG="$LOG_DIR/device2.log"
+
+# --fresh:仅在显式指定时清空 demo 库(重新建库);默认保留以模拟跨重启持久化。
+FRESH=0
+for _a in "$@"; do [[ "$_a" == "--fresh" ]] && FRESH=1; done
+
+usage() {
+  cat <<EOF
+Usage: test/demo/demo <start|stop|restart|status|logs|paths> [--fresh]
+
+Flags:
+  --fresh          重建 demo 库(删除 sms.db);仅显式指定时生效,默认保留以模拟持久化。
+                   例: test/demo/demo restart --fresh
+
+Environment overrides:
+  DEMO_RUN_DIR       default: $SCRIPT_DIR/data
+  DEMO_HUB_PORT      default: 8025
+  DEMO_DEVICE_PORT   default: 8080
+  DEMO_TOKEN         default: demo-token-12345678
+  DEMO_WEBUI_USER    default: admin
+  DEMO_WEBUI_PASS    default: demo-pass
+  DEMO_POLL_INTERVAL default: 5
+
+URLs after start:
+  Hub UI:        $HUB_URL/
+  Mock console:  http://127.0.0.1:$DEVICE_PORT/
+  Device API:    $DEVICE_URL
+EOF
+}
+
+mkdirs() {
+  mkdir -p "$DATA_DIR" "$LOG_DIR" "$PID_DIR"
+}
+
+reset_db() {
+  rm -f "$DATA_DIR/sms.db" "$DATA_DIR/sms.db-wal" "$DATA_DIR/sms.db-shm"
+}
+
+python_bin() {
+  if [[ -x "$ROOT/.local/venv/bin/python" ]]; then
+    printf '%s\n' "$ROOT/.local/venv/bin/python"
+    return
+  fi
+  if command -v python3 >/dev/null 2>&1; then
+    command -v python3
+    return
+  fi
+  printf 'python3 not found\n' >&2
+  exit 1
+}
+
+write_env_file() {
+  cat >"$ENV_FILE" <<EOF
+RUN_DIR=$RUN_DIR
+DATA_DIR=$DATA_DIR
+HUB_PORT=$HUB_PORT
+DEVICE_PORT=$DEVICE_PORT
+TOKEN=$TOKEN
+HUB_URL=$HUB_URL
+DEVICE_URL=$DEVICE_URL
+WEBUI_USER=$WEBUI_USER
+WEBUI_PASS=$WEBUI_PASS
+POLL_INTERVAL=$POLL_INTERVAL
+ALLOW_LOOPBACK_DEVICE=1
+DEVICE2_PORT=$DEVICE2_PORT
+EOF
+}
+
+pid_value() {
+  local file="$1"
+  [[ -s "$file" ]] || return 1
+  sed -n '1p' "$file"
+}
+
+is_running() {
+  local file="$1" pid
+  pid="$(pid_value "$file" 2>/dev/null || true)"
+  [[ -n "${pid:-}" ]] || return 1
+  kill -0 "$pid" 2>/dev/null
+}
+
+check_python_deps() {
+  local py="$1"
+  "$py" -c 'import fastapi, uvicorn, httpx, aiosqlite' >/dev/null 2>&1 || {
+    printf 'Missing Python dependencies. Install with:\n  cd %s && %s -m pip install -r core/requirements-dev.txt\n' "$ROOT" "$py" >&2
+    exit 1
+  }
+}
+
+wait_http() {
+  local url="$1" name="$2" py="$3"
+  "$py" - "$url" "$name" <<'PY'
+import sys
+import time
+import urllib.error
+import urllib.request
+
+url, name = sys.argv[1], sys.argv[2]
+deadline = time.time() + 20
+last = ""
+while time.time() < deadline:
+    try:
+        with urllib.request.urlopen(url, timeout=1.5) as resp:
+            if 200 <= resp.status < 500:
+                print(f"{name} ready: {url}")
+                raise SystemExit(0)
+    except Exception as exc:
+        last = str(exc)
+    time.sleep(0.5)
+
+print(f"{name} did not become ready: {last}", file=sys.stderr)
+raise SystemExit(1)
+PY
+}
+
+start_hub() {
+  local py="$1"
+  if is_running "$HUB_PID"; then
+    printf 'Hub already running, pid %s\n' "$(pid_value "$HUB_PID")"
+    return
+  fi
+  ROOT="$ROOT" DATA_DIR="$DATA_DIR" TOKEN="$TOKEN" DEVICE_URL="$DEVICE_URL" \
+    POLL_INTERVAL="$POLL_INTERVAL" WEBUI_USER="$WEBUI_USER" WEBUI_PASS="$WEBUI_PASS" \
+    JWT_SECRET="$JWT_SECRET" HUB_PORT="$HUB_PORT" PY="$py" \
+    nohup setsid bash -c '
+    set -euo pipefail
+    cd "$ROOT"
+    PYTHONUNBUFFERED=1 \
+    DATA_DIR="$DATA_DIR" \
+    DEVICE_TOKEN="$TOKEN" \
+    DEVICE_URL="$DEVICE_URL" \
+    POLL_INTERVAL="$POLL_INTERVAL" \
+    ALERT_CONSECUTIVE_FAILS=3 \
+    TG_BOT_TOKEN= \
+    TG_CHAT_ID= \
+    TG_MANAGE_ENABLED=0 \
+    FORWARD_SMS_TO= \
+    ADMIN_PHONE= \
+    BLACKLIST= \
+    KEEPALIVE_INTERVAL_DAYS=0 \
+    ALLOW_LOOPBACK_DEVICE=1 \
+    HEARTBEAT_ONLINE_FLOOR_S=15 \
+    DATA_PLANE_ONLINE_FLOOR_S=15 \
+    WEBUI_USER="$WEBUI_USER" \
+    WEBUI_PASS="$WEBUI_PASS" \
+    JWT_SECRET="$JWT_SECRET" \
+    LISTEN_PORT="$HUB_PORT" \
+    exec "$PY" -m core.main
+  ' >>"$HUB_LOG" 2>&1 < /dev/null &
+  printf '%s\n' "$!" >"$HUB_PID"
+}
+
+start_device() {
+  local py="$1"
+  if is_running "$DEVICE_PID"; then
+    printf 'Mock device already running, pid %s\n' "$(pid_value "$DEVICE_PID")"
+    return
+  fi
+  ROOT="$ROOT" TOKEN="$TOKEN" DEVICE_PORT="$DEVICE_PORT" HUB_URL="$HUB_URL" PY="$py" \
+    nohup setsid bash -c '
+    set -euo pipefail
+    cd "$ROOT"
+    PYTHONUNBUFFERED=1 \
+    DEVICE_TOKEN="$TOKEN" \
+    MOCK_PORT="$DEVICE_PORT" \
+    HUB_URL="$HUB_URL" \
+    exec "$PY" test/demo/mock_device.py --port "$DEVICE_PORT" --hub "$HUB_URL"
+  ' >>"$DEVICE_LOG" 2>&1 < /dev/null &
+  printf '%s\n' "$!" >"$DEVICE_PID"
+}
+
+start_device2() {
+  local py="$1"
+  [[ -n "$DEVICE2_PORT" ]] || return 0
+  if is_running "$DEVICE2_PID"; then
+    printf 'Mock device 2 already running, pid %s\n' "$(pid_value "$DEVICE2_PID")"
+    return
+  fi
+  ROOT="$ROOT" TOKEN="$TOKEN" DEVICE2_PORT="$DEVICE2_PORT" DEVICE2_MAC="$DEVICE2_MAC" \
+    DEVICE2_OPERATOR="$DEVICE2_OPERATOR" DEVICE2_IMSI="$DEVICE2_IMSI" \
+    DEVICE2_MSISDN="$DEVICE2_MSISDN" DEVICE2_ICCID="$DEVICE2_ICCID" \
+    HUB_URL="$HUB_URL" PY="$py" \
+    nohup setsid bash -c '
+    set -euo pipefail
+    cd "$ROOT"
+    PYTHONUNBUFFERED=1 \
+    DEVICE_TOKEN="$TOKEN" \
+    MOCK_PORT="$DEVICE2_PORT" \
+    MOCK_MAC="$DEVICE2_MAC" \
+    MOCK_OPERATOR="$DEVICE2_OPERATOR" \
+    MOCK_IMSI="$DEVICE2_IMSI" \
+    MOCK_MSISDN="$DEVICE2_MSISDN" \
+    MOCK_ICCID="$DEVICE2_ICCID" \
+    HUB_URL="$HUB_URL" \
+    exec "$PY" test/demo/mock_device.py --port "$DEVICE2_PORT" --hub "$HUB_URL"
+  ' >>"$DEVICE2_LOG" 2>&1 < /dev/null &
+  printf '%s\n' "$!" >"$DEVICE2_PID"
+}
+
+stop_one() {
+  local name="$1" file="$2" pid
+  pid="$(pid_value "$file" 2>/dev/null || true)"
+  if [[ -z "${pid:-}" ]]; then
+    printf '%s not running\n' "$name"
+    return
+  fi
+  if kill -0 "$pid" 2>/dev/null; then
+    kill "$pid" 2>/dev/null || true
+    for _ in {1..40}; do
+      if ! kill -0 "$pid" 2>/dev/null; then
+        break
+      fi
+      sleep 0.25
+    done
+    if kill -0 "$pid" 2>/dev/null; then
+      kill -9 "$pid" 2>/dev/null || true
+    fi
+    printf '%s stopped, pid %s\n' "$name" "$pid"
+  else
+    printf '%s pid file was stale, pid %s\n' "$name" "$pid"
+  fi
+  rm -f "$file"
+}
+
+cmd_start() {
+  mkdirs
+  if [[ "$FRESH" -eq 1 ]]; then
+    printf 'Wiping demo database (--fresh)...\n'
+    reset_db
+  fi
+  write_env_file
+  local py
+  py="$(python_bin)"
+  check_python_deps "$py"
+  : >"$HUB_LOG"
+  : >"$DEVICE_LOG"
+  start_hub "$py"
+  wait_http "$HUB_URL/api/health" "Hub" "$py" || {
+    printf 'Hub log:\n' >&2
+    tail -n 80 "$HUB_LOG" >&2 || true
+    exit 1
+  }
+  start_device "$py"
+  wait_http "http://127.0.0.1:$DEVICE_PORT/$TOKEN/status" "Mock device" "$py" || {
+    printf 'Device log:\n' >&2
+    tail -n 80 "$DEVICE_LOG" >&2 || true
+    exit 1
+  }
+  if [[ -n "$DEVICE2_PORT" ]]; then
+    : >"$DEVICE2_LOG"
+    start_device2 "$py"
+    wait_http "http://127.0.0.1:$DEVICE2_PORT/$TOKEN/status" "Mock device 2" "$py" || {
+      printf 'Device 2 log:\n' >&2
+      tail -n 80 "$DEVICE2_LOG" >&2 || true
+      exit 1
+    }
+  fi
+  printf '\nDemo running\n'
+  printf '  Hub UI:       %s/\n' "$HUB_URL"
+  printf '  Login:        %s / %s\n' "$WEBUI_USER" "$WEBUI_PASS"
+  printf '  Device API:   %s\n' "$DEVICE_URL"
+  printf '  Mock console: http://127.0.0.1:%s/\n' "$DEVICE_PORT"
+  [[ -z "$DEVICE2_PORT" ]] || printf '  Mock console 2: http://127.0.0.1:%s/ (MAC %s)\n' "$DEVICE2_PORT" "$DEVICE2_MAC"
+  printf '  Run dir:      %s\n' "$RUN_DIR"
+  printf '  Logs:         %s\n' "$LOG_DIR"
+}
+
+cmd_stop() {
+  stop_one "Mock device 2" "$DEVICE2_PID" 2>/dev/null || true
+  stop_one "Mock device" "$DEVICE_PID"
+  stop_one "Hub" "$HUB_PID"
+}
+
+cmd_status() {
+  mkdirs
+  if is_running "$HUB_PID"; then
+    printf 'Hub: running, pid %s, url %s/\n' "$(pid_value "$HUB_PID")" "$HUB_URL"
+  else
+    printf 'Hub: stopped\n'
+  fi
+  if is_running "$DEVICE_PID"; then
+    printf 'Mock device: running, pid %s, url http://127.0.0.1:%s/\n' "$(pid_value "$DEVICE_PID")" "$DEVICE_PORT"
+  else
+    printf 'Mock device: stopped\n'
+  fi
+  if [[ -n "$DEVICE2_PORT" ]]; then
+    if is_running "$DEVICE2_PID"; then
+      printf 'Mock device 2: running, pid %s, url http://127.0.0.1:%s/ (MAC %s)\n' "$(pid_value "$DEVICE2_PID")" "$DEVICE2_PORT" "$DEVICE2_MAC"
+    else
+      printf 'Mock device 2: stopped\n'
+    fi
+  fi
+  printf 'Run dir: %s\n' "$RUN_DIR"
+}
+
+cmd_logs() {
+  mkdirs
+  printf '== hub.log ==\n'
+  tail -n 80 "$HUB_LOG" 2>/dev/null || true
+  printf '\n== device.log ==\n'
+  tail -n 80 "$DEVICE_LOG" 2>/dev/null || true
+  if [[ -n "$DEVICE2_PORT" ]]; then
+    printf '\n== device2.log ==\n'
+    tail -n 80 "$DEVICE2_LOG" 2>/dev/null || true
+  fi
+}
+
+cmd_paths() {
+  mkdirs
+  write_env_file
+  printf 'Run dir: %s\n' "$RUN_DIR"
+  printf 'Data:    %s\n' "$DATA_DIR"
+  printf 'Logs:    %s\n' "$LOG_DIR"
+  printf 'PIDs:    %s\n' "$PID_DIR"
+  printf 'Env:     %s\n' "$ENV_FILE"
+}
+
+case "${1:-}" in
+  start) cmd_start ;;
+  stop) cmd_stop ;;
+  restart) cmd_stop; cmd_start ;;
+  status) cmd_status ;;
+  logs) cmd_logs ;;
+  paths) cmd_paths ;;
+  -h|--help|help|"") usage ;;
+  *)
+    usage >&2
+    exit 2
+    ;;
+esac

@@ -1,0 +1,1385 @@
+openapi: 3.1.0
+info:
+  title: sms-hub API
+  version: 2.0.0
+  summary: 瘦终端 + Hub 短信网关的完整 HTTP 契约(v2)
+  description: |
+    三个通信平面:
+      1. **设备 → Hub**:`POST /hook/{token}`(设备主动上报,token 即全局 DEVICE_TOKEN)。
+      2. **浏览器 → Hub**:`/api/*`(除 health/login/metrics 外需 `Authorization: Bearer <token>`)。
+      3. **Hub → 设备**:`/{token}/pull|send|delete|at|update`(由瘦终端固件提供,路径级 `servers` 覆盖指向设备;
+         token 不匹配返回 404 空响应;请求体必须 `ensure_ascii=False`)。
+
+    卡片为中心:`sim_id`(IMSI 派生)是短信/发件/通知/收件筛选的业务主键;`device_mac` 是承载载体。
+    当前卡片类 API 的 `sim_id` 缺省时,恰 1 张启用卡自动推断,0 或 >1 张时返回 400。
+
+    与本文对齐的人类可读文档:`docs/guide.md`(设计与接口权威:架构/可靠性/接口契约/数据模型)。
+    本文件是机器可读、可校验的契约来源;前端类型应据此生成以杜绝手写漂移。
+
+  contact: {}
+  license:
+    name: MIT
+servers:
+  - url: http://{hubHost}
+    description: Hub —— 浏览器与设备上报入口
+    variables:
+      hubHost:
+        description: Hub 监听地址:端口(默认 :8025)
+        default: 127.0.0.1:8025
+
+# 默认所有 /api/* 需 Bearer;公开端点用 security: [] 覆盖
+security:
+  - bearerAuth: []
+
+tags:
+  - name: Auth
+    description: 登录与健康检查
+  - name: Events
+    description: SSE 实时推送
+  - name: System
+    description: 健康检查与 Prometheus 指标
+  - name: Devices & SIMs
+    description: 卡片注册表(/api/sims)与瘦终端 + 各卡承载快照(/api/devices)
+  - name: Messages
+    description: 收件查询、详情、导出、删除
+  - name: Outbound
+    description: 出站发送与发件队列
+  - name: Contacts
+    description: 发件人别名
+  - name: Status & Control
+    description: 当前卡片状态与设备控制(拉取/刷新/排空/AT)
+  - name: Config & Notify
+    description: 全局运行时配置与通知通道健康
+  - name: Device-Webhook
+    description: 设备 → Hub 上报入口
+  - name: Device-Firmware
+    description: 由瘦终端固件提供的端点(Hub → 设备 / 浏览器 OTA)
+
+paths:
+  # ════════════ Auth / System ════════════
+  /api/health:
+    get:
+      tags: [System, Auth]
+      summary: 健康检查
+      security: []
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: {type: boolean, example: true}
+                required: [ok]
+
+  /api/login:
+    post:
+      tags: [Auth]
+      summary: 登录获取会话令牌
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                user: {type: string}
+                password: {type: string}
+              required: [user, password]
+      responses:
+        '200':
+          description: 登录成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  token: {type: string, description: HMAC 签名 user:exp:sig}
+                required: [token]
+        '401':
+          $ref: '#/components/responses/Error'
+
+  /metrics:
+    get:
+      tags: [System]
+      summary: Prometheus 文本指标(LAN-only,无鉴权)
+      security: []
+      description: |
+        指标:`sms_hub_device_reachable`、`sms_hub_heartbeat_online`、`sms_hub_data_plane_online`、
+        `sms_hub_device_busy`(label `device_mac`,`device_name`);`sms_hub_messages_total`(label `sim_id`,`sim_name`);
+        `sms_hub_outbound_jobs`(label `status`);`sms_hub_notify_jobs`(label `channel`,`status`)。
+      responses:
+        '200':
+          description: Prometheus exposition 文本
+          content:
+            text/plain:
+              schema: {type: string}
+
+  # ════════════ Events (SSE) ════════════
+  /api/events:
+    get:
+      tags: [Events]
+      summary: 实时事件流(SSE)
+      description: |
+        EventSource 无法带 header,token 走查询参数。连接后先发 `retry: 3000`,空闲 25s 发保活注释 `: ping`。
+        事件 payload 固定含 `type`;卡片相关含 `sim_id`,设备相关含 `device_mac`。
+      security: []
+      parameters:
+        - name: token
+          in: query
+          required: true
+          schema: {type: string}
+          description: 会话令牌(与 Bearer 同)
+      responses:
+        '200':
+          description: SSE 事件流
+          content:
+            text/event-stream:
+              schema:
+                $ref: '#/components/schemas/SSEEvent'
+              examples:
+                new_messages:
+                  value: "data: {\"type\":\"new_messages\",\"sim_id\":\"sim_0123456789abcdef\",\"device_mac\":\"aabbccddeeff\",\"count\":2}\n\n"
+                device:
+                  value: "data: {\"type\":\"device\",\"device_mac\":\"aabbccddeeff\",\"online\":true}\n\n"
+                outbound:
+                  value: "data: {\"type\":\"outbound\",\"sim_id\":\"sim_0123456789abcdef\",\"device_mac\":\"aabbccddeeff\",\"id\":7}\n\n"
+        '401':
+          $ref: '#/components/responses/Error'
+
+  # ════════════ Devices & SIMs ════════════
+  /api/devices:
+    get:
+      tags: [Devices & SIMs]
+      summary: 列出瘦终端 + 各卡实时承载快照
+      description: 一次性返回设备在线性与各卡归属,供状态页渲染。
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  devices:
+                    type: array
+                    items: {$ref: '#/components/schemas/DeviceView'}
+                  sims:
+                    type: array
+                    items: {$ref: '#/components/schemas/SimView'}
+                required: [devices, sims]
+
+  /api/sims:
+    get:
+      tags: [Devices & SIMs]
+      summary: 卡片注册表
+      description: 返回全部 SIM 卡片(卡片为中心的权威清单)。
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  sims:
+                    type: array
+                    items: {$ref: '#/components/schemas/SimView'}
+                required: [sims]
+
+  /api/devices/{mac}:
+    parameters:
+      - $ref: '#/components/parameters/DeviceMac'
+    patch:
+      tags: [Devices & SIMs]
+      summary: 改设备名 / 启用状态
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/PatchDeviceBody'}
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: {type: boolean}
+                  device: {$ref: '#/components/schemas/DeviceBrief'}
+                required: [ok, device]
+        '404':
+          $ref: '#/components/responses/Error'
+
+  /api/sims/{sim_id}:
+    parameters:
+      - $ref: '#/components/parameters/SimIdPath'
+    patch:
+      tags: [Devices & SIMs]
+      summary: 改卡片备注 / 启用状态
+      description: '`enabled` 由 false→true 时立即对其当前承载设备补拉一次。'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/PatchSimBody'}
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: {type: boolean}
+                  sim: {$ref: '#/components/schemas/SimBrief'}
+                required: [ok, sim]
+        '404':
+          $ref: '#/components/responses/Error'
+
+  # ════════════ Messages ════════════
+  /api/messages:
+    get:
+      tags: [Messages]
+      summary: 查询收件(分页/搜索/按卡筛选)
+      parameters:
+        - $ref: '#/components/parameters/SimIdQuery'
+        - name: q
+          in: query
+          schema: {type: string}
+          description: 搜索发件人/正文/别名
+        - name: limit
+          in: query
+          schema: {type: integer, minimum: 1, maximum: 200, default: 50}
+        - name: offset
+          in: query
+          schema: {type: integer, minimum: 0, default: 0}
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  total: {type: integer}
+                  messages:
+                    type: array
+                    items: {$ref: '#/components/schemas/Message'}
+                  readonly: {type: boolean}
+                required: [total, messages, readonly]
+        '400':
+          $ref: '#/components/responses/Error'
+    delete:
+      tags: [Messages]
+      summary: 批量删除(写墓碑 + best-effort 设备删除)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                ids:
+                  type: array
+                  items: {type: integer}
+              required: [ids]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: {type: boolean}
+                  deleted: {type: integer}
+                  device_deleted: {type: integer}
+                required: [ok, deleted, device_deleted]
+        '400':
+          $ref: '#/components/responses/Error'
+
+  /api/messages/export:
+    get:
+      tags: [Messages]
+      summary: 导出收件(CSV/JSON 文件下载)
+      parameters:
+        - $ref: '#/components/parameters/SimIdQuery'
+        - name: q
+          in: query
+          schema: {type: string}
+        - name: fmt
+          in: query
+          schema: {type: string, enum: [csv, json], default: csv}
+        - name: limit
+          in: query
+          schema: {type: integer, minimum: 1, maximum: 20000, default: 5000}
+      responses:
+        '200':
+          description: 文件下载
+          headers:
+            Content-Disposition:
+              schema: {type: string}
+              example: attachment; filename="sms-export.csv"
+          content:
+            text/csv:
+              schema: {type: string}
+            application/json:
+              schema: {type: string}
+
+  /api/messages/{msg_id}:
+    parameters:
+      - name: msg_id
+        in: path
+        required: true
+        schema: {type: integer}
+        description: Hub 全局消息 id
+    get:
+      tags: [Messages]
+      summary: 单条详情(含通知记录)
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/MessageDetail'}
+        '404':
+          $ref: '#/components/responses/Error'
+    delete:
+      tags: [Messages]
+      summary: 删除单条(写墓碑 + best-effort 设备删除)
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: {type: boolean}
+                  deleted: {type: integer, description: '恒为 1', example: 1}
+                  device_deleted: {type: integer}
+                required: [ok, deleted, device_deleted]
+
+  # ════════════ Outbound ════════════
+  /api/send:
+    post:
+      tags: [Outbound]
+      summary: 入站发送(写 outbound 队列,sender worker 执行;不故障转移)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/SendBody'}
+      responses:
+        '200':
+          description: 已入队
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/SendResponse'}
+        '400':
+          $ref: '#/components/responses/Error'
+        '503':
+          description: DEVICE_TOKEN 未配置,无法发送
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+
+  /api/outbound:
+    get:
+      tags: [Outbound]
+      summary: 发件队列(按卡筛选)
+      parameters:
+        - name: sim_id
+          in: query
+          required: false
+          schema: {type: string}
+          description: 具体 sim_id / `online`(仅在线卡) / `all`;缺省=全部(不自动推断、不报 400)
+        - name: limit
+          in: query
+          schema: {type: integer, minimum: 1, maximum: 100, default: 20}
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  outbound:
+                    type: array
+                    items: {$ref: '#/components/schemas/Outbound'}
+                required: [outbound]
+
+  /api/outbound/{ob_id}:
+    parameters:
+      - name: ob_id
+        in: path
+        required: true
+        schema: {type: integer}
+    delete:
+      tags: [Outbound]
+      summary: 删除发件记录
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Ok'}
+        '404':
+          $ref: '#/components/responses/Error'
+
+  # ════════════ Contacts ════════════
+  /api/contacts:
+    get:
+      tags: [Contacts]
+      summary: 列出发件人别名
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  contacts:
+                    type: array
+                    items: {$ref: '#/components/schemas/Contact'}
+                required: [contacts]
+
+  /api/contacts/{phone}:
+    parameters:
+      - name: phone
+        in: path
+        required: true
+        schema: {type: string}
+        description: 发件人号码(canonicalize 归一化)
+    put:
+      tags: [Contacts]
+      summary: 保存别名(空别名则删除)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                alias: {type: string}
+              required: [alias]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: {type: boolean}
+                  phone: {type: string}
+                  alias: {type: string}
+                  deleted: {type: boolean, description: 空别名删除时为 true}
+                required: [ok]
+        '400':
+          $ref: '#/components/responses/Error'
+    delete:
+      tags: [Contacts]
+      summary: 删除别名
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Ok'}
+
+  # ════════════ Status & Control ════════════
+  /api/status:
+    get:
+      tags: [Status & Control]
+      summary: 当前卡片 + 承载设备合成状态(读心跳缓存,不打扰设备)
+      parameters:
+        - $ref: '#/components/parameters/SimIdQuery'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/StatusResponse'}
+        '400':
+          $ref: '#/components/responses/Error'
+
+  /api/poll:
+    post:
+      tags: [Status & Control]
+      summary: 强制拉取一批入库
+      description: 立即对该卡片承载设备拉一轮(PULL_BATCH=20),返回新入库条数。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/SimBody'}
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/PollResponse'}
+        '409':
+          $ref: '#/components/responses/Error'
+        '502':
+          $ref: '#/components/responses/Error'
+
+  /api/status/refresh:
+    post:
+      tags: [Status & Control]
+      summary: 刷新 modem 身份(pull?include_status=1, limit=1)
+      description: 与 /api/poll 不同:只刷新 modem 身份块,不批量入库,返回 age_s=0。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/SimBody'}
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/RefreshResponse'}
+        '409':
+          $ref: '#/components/responses/Error'
+        '502':
+          $ref: '#/components/responses/Error'
+
+  /api/buffer/clear:
+    post:
+      tags: [Status & Control]
+      summary: 排空设备缓冲里已同步到 Hub 的消息
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/SimBody'}
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ClearBufferResponse'}
+        '409':
+          $ref: '#/components/responses/Error'
+        '502':
+          $ref: '#/components/responses/Error'
+
+  /api/at:
+    post:
+      tags: [Status & Control]
+      summary: AT 透传(不排队,设备忙即 409)
+      description: |
+        超时 timeout_ms 限制在 100..15000。**不排队**:设备正忙或已有短信任务等待时直接 409。
+        响应直接透传设备 `{ok, response}`(无独立 error 字段);失败原因(如 `TIMEOUT`、`缺少 cmd 字段`)放 response,ok=false。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/AtBody'}
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AtResponse'}
+        '409':
+          $ref: '#/components/responses/Error'
+        '502':
+          $ref: '#/components/responses/Error'
+
+  # ════════════ Config & Notify ════════════
+  /api/config:
+    get:
+      tags: [Config & Notify]
+      summary: 当前运行时配置(token 脱敏)
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Config'}
+    post:
+      tags: [Config & Notify]
+      summary: 保存运行时配置(写 kv 即时生效,无需重启)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ConfigBody'}
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Ok'}
+        '400':
+          $ref: '#/components/responses/Error'
+
+  /api/notify/test:
+    post:
+      tags: [Config & Notify]
+      summary: 测试指定通知通道
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/NotifyTestBody'}
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/NotifyTestResponse'}
+
+  # ════════════ Device → Hub ════════════
+  /hook/{token}:
+    post:
+      tags: [Device-Webhook]
+      summary: 设备上报入口(门铃 + 地址上报 + 状态快照)
+      description: |
+        token 只认证、不区分设备,body 必须带 `mac`。token 不匹配返回 **404 空响应**。
+        不在请求内同步 pull —— 只做 token 校验、MAC/IMSI 规范化、状态快照保存、异步拉取排队。
+        ip:port 须经 SSRF 校验(仅 RFC1918/ULA)才写入 base_url。
+      security: []
+      parameters:
+        - name: token
+          in: path
+          required: true
+          schema: {type: string}
+          description: 全局 DEVICE_TOKEN
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/WebhookBody'}
+            examples:
+              heartbeat:
+                summary: heartbeat/boot 携带完整状态(含 modem.imsi)
+                value:
+                  event: heartbeat
+                  mac: aabbccddeeff
+                  seq_id: 12
+                  ip: 192.168.1.88
+                  port: 80
+                  fw: 2.1.0
+                  heartbeat_interval_s: 60
+                  modem:
+                    ready: true
+                    operator: CMCC
+                    csq_dbm: -78
+                    imsi: '460001234567731'
+                    imsi_tail: '7731'
+                    msisdn: '13800138000'
+                    iccid: 898600A00000F0217731
+                    iccid_tail: '7731'
+                  buffer: {oldest_id: 88, latest_id: 123, count: 4, capacity: 50, dropped_total: 0}
+              sms:
+                summary: sms/hello 只带轻量字段
+                value:
+                  event: sms
+                  mac: aabbccddeeff
+                  ip: 192.168.1.88
+                  port: 80
+                  buffer: {latest_id: 124}
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: {type: boolean}
+                  pull_scheduled: {type: boolean, description: 本轮是否排了异步拉取}
+                required: [ok, pull_scheduled]
+        '400':
+          description: MAC 缺失/非法,或 ip:port 未过 SSRF 校验
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+        '404':
+          description: token 不匹配(空响应)
+
+  # ════════════ Hub → Device(设备固件提供,路径级 servers 覆盖)════════════
+  /{token}/pull:
+    servers:
+      - url: http://{deviceHost}
+        description: 瘦终端固件(局域网明文 HTTP)
+        variables:
+          deviceHost:
+            description: 设备 ip[:port](端口 80 可省略)
+            default: 192.168.1.88
+    get:
+      tags: [Device-Firmware]
+      summary: 游标拉取短信(buffer 摘要 + 消息 + 可选状态)
+      description: 短信正文唯一事实源。token 不匹配返回 404 空响应。Hub 超时 10s。
+      parameters:
+        - $ref: '#/components/parameters/DeviceTokenPath'
+        - name: after
+          in: query
+          required: true
+          schema: {type: integer}
+          description: 游标,返回 device_msg_id > after 的消息
+        - name: limit
+          in: query
+          schema: {type: integer, minimum: 1, maximum: 50, default: 20}
+        - name: include_status
+          in: query
+          schema: {type: integer, enum: [0, 1], default: 0}
+          description: 1 时响应带 status.modem 身份块
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/PullResponse'}
+        '404':
+          description: token 不匹配(空响应)
+
+  /{token}/send:
+    servers:
+      - url: http://{deviceHost}
+        variables:
+          deviceHost: {description: "设备 ip[:port]", default: 192.168.1.88}
+    post:
+      tags: [Device-Firmware]
+      summary: 发送短信
+      description: 请求体必须 `ensure_ascii=False`。Hub 超时 `20 + 36×段数`s。
+      parameters:
+        - $ref: '#/components/parameters/DeviceTokenPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                to: {type: string}
+                text: {type: string}
+              required: [to, text]
+      responses:
+        '200':
+          description: 成功或失败均 200(看 ok 字段)
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/DeviceSendResponse'}
+        '404':
+          description: token 不匹配(空响应)
+
+  /{token}/delete:
+    servers:
+      - url: http://{deviceHost}
+        variables:
+          deviceHost: {description: "设备 ip[:port]", default: 192.168.1.88}
+    post:
+      tags: [Device-Firmware]
+      summary: 批量删除设备缓冲消息
+      description: found=false 视为幂等成功;Hub 墓碑是最终防回流兜底。Hub 超时 8s。
+      parameters:
+        - $ref: '#/components/parameters/DeviceTokenPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                device_msg_ids:
+                  type: array
+                  items: {type: integer}
+              required: [device_msg_ids]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/DeleteResponse'}
+        '404':
+          description: token 不匹配(空响应)
+
+  /{token}/at:
+    servers:
+      - url: http://{deviceHost}
+        variables:
+          deviceHost: {description: "设备 ip[:port]", default: 192.168.1.88}
+    post:
+      tags: [Device-Firmware]
+      summary: AT 透传
+      description: timeout_ms 限 100..15000。Hub 超时 `timeout_ms/1000 + 5`s。
+      parameters:
+        - $ref: '#/components/parameters/DeviceTokenPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/DeviceAtBody'}
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/DeviceAtResponse'}
+        '404':
+          description: token 不匹配(空响应)
+
+  /{token}/update:
+    servers:
+      - url: http://{deviceHost}
+        variables:
+          deviceHost: {description: "设备 ip[:port]", default: 192.168.1.88}
+    get:
+      tags: [Device-Firmware]
+      summary: OTA 上传页(浏览器直连设备,非 Hub)
+      parameters:
+        - $ref: '#/components/parameters/DeviceTokenPath'
+      responses:
+        '200':
+          description: OTA 上传 HTML 页
+          content:
+            text/html:
+              schema: {type: string}
+    post:
+      tags: [Device-Firmware]
+      summary: 上传固件并重启(浏览器直连设备,非 Hub)
+      parameters:
+        - $ref: '#/components/parameters/DeviceTokenPath'
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                firmware:
+                  type: string
+                  format: binary
+              required: [firmware]
+      responses:
+        '200':
+          description: 升级结果
+          content:
+            text/plain:
+              schema: {type: string}
+
+  /{token}/status:
+    servers:
+      - url: http://{deviceHost}
+        variables:
+          deviceHost: {description: "设备 ip[:port]", default: 192.168.1.88}
+    get:
+      tags: [Device-Firmware]
+      summary: 完整设备快照(设备本地自检/调试用;Hub 不调用)
+      description: |
+        Hub 已不调用此端点——状态刷新统一走 `/{token}/pull?include_status=1`。
+        保留供设备自检、mock 控制台与人工调试。不属于 Hub 契约。
+      parameters:
+        - $ref: '#/components/parameters/DeviceTokenPath'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/DeviceStatus'}
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: 会话令牌(POST /api/login 获取),TTL 30 天。
+
+  parameters:
+    SimIdQuery:
+      name: sim_id
+      in: query
+      required: false
+      schema: {type: string}
+      description: '具体 sim_id / `all`(全部卡) / `online`(仅在线卡);缺省时单卡自动推断,多卡须显式(否则 400)'
+    SimIdPath:
+      name: sim_id
+      in: path
+      required: true
+      schema: {type: string}
+    DeviceMac:
+      name: mac
+      in: path
+      required: true
+      schema: {type: string}
+      description: 规范化小写无分隔 12 位 hex
+    DeviceTokenPath:
+      name: token
+      in: path
+      required: true
+      schema: {type: string}
+      description: 全局 DEVICE_TOKEN;不匹配返回 404 空响应
+
+  responses:
+    Error:
+      description: 错误
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/Error'}
+
+  schemas:
+    Error:
+      type: object
+      properties:
+        detail: {type: string}
+      required: [detail]
+
+    Ok:
+      type: object
+      properties:
+        ok: {type: boolean}
+      required: [ok]
+
+    # ── 设备上报 ──
+    WebhookBody:
+      type: object
+      required: [event, mac]
+      properties:
+        event: {type: string, enum: [boot, hello, sms, heartbeat]}
+        mac: {type: string, description: 小写无分隔 12 位 hex(也接受冒号/横线形式)}
+        seq_id: {type: integer, description: 同物理设备内单调递增序号}
+        device_ts_ms: {type: integer}
+        ip: {type: string, description: 设备自报 IP,须经 SSRF 校验}
+        port: {type: integer, minimum: 1, maximum: 65535}
+        fw: {type: string}
+        heartbeat_interval_s: {type: integer}
+        uptime_s: {type: integer}
+        modem: {$ref: '#/components/schemas/ModemSnapshot'}
+        buffer: {$ref: '#/components/schemas/BufferSummary'}
+        counters: {$ref: '#/components/schemas/Counters'}
+        last_error: {type: string}
+
+    ModemSnapshot:
+      type: object
+      properties:
+        ready: {type: boolean}
+        model: {type: string}
+        cereg: {type: integer}
+        csq_dbm: {type: integer}
+        operator: {type: string}
+        sim: {type: boolean}
+        imsi: {type: string, description: 完整 IMSI(仅受控通道瞬时用,Hub 不持久化/回传)}
+        imsi_tail: {type: string}
+        msisdn: {type: string}
+        iccid: {type: string}
+        iccid_tail: {type: string}
+        apn: {type: string}
+        flight_mode: {type: integer}
+        pdp_active: {type: boolean}
+
+    BufferSummary:
+      type: object
+      properties:
+        oldest_id: {type: integer}
+        latest_id: {type: integer}
+        count: {type: integer}
+        capacity: {type: integer}
+        dropped_total: {type: integer}
+        last_pulled_id: {type: integer, description: 仅设备 /status 快照含}
+
+    Counters:
+      type: object
+      properties:
+        rx_total: {type: integer}
+        tx_total: {type: integer}
+        webhook_fail_total: {type: integer}
+
+    # ── 设备/卡视图 ──
+    DeviceView:
+      type: object
+      required: [mac, display_mac, name, enabled, online, heartbeat_online, data_plane_online, last_heartbeat_ago_s, last_poll_ago_s, last_hook_ago_s, cursor, busy, buffer, modem, current_sim_id]
+      properties:
+        mac: {type: string}
+        display_mac: {type: string}
+        name: {type: string}
+        enabled: {type: boolean}
+        online: {type: boolean}
+        heartbeat_online: {type: boolean}
+        data_plane_online: {type: boolean}
+        last_heartbeat_ago_s: {type: integer}
+        last_poll_ago_s: {type: integer}
+        last_hook_ago_s: {type: integer}
+        cursor: {type: integer}
+        busy: {type: string, description: Hub 正占用的操作名,空串表示空闲}
+        buffer: {$ref: '#/components/schemas/BufferSummary'}
+        modem: {$ref: '#/components/schemas/ModemSnapshot'}
+        current_sim_id: {type: string}
+
+    DeviceBrief:
+      type: object
+      properties:
+        mac: {type: string}
+        name: {type: string}
+        enabled: {type: boolean}
+      required: [mac, name, enabled]
+
+    SimView:
+      type: object
+      required: [sim_id, name, enabled, current_device_mac, identity_source, msisdn, imsi_tail, iccid_tail, operator]
+      properties:
+        sim_id: {type: string}
+        name: {type: string}
+        enabled: {type: boolean}
+        current_device_mac: {type: string}
+        identity_source: {type: string, enum: [imsi, temporary]}
+        msisdn: {type: string}
+        imsi_tail: {type: string}
+        iccid_tail: {type: string}
+        operator: {type: string}
+
+    SimBrief:
+      type: object
+      properties:
+        sim_id: {type: string}
+        name: {type: string}
+        enabled: {type: boolean}
+      required: [sim_id, name, enabled]
+
+    # ── 请求体 ──
+    PatchDeviceBody:
+      type: object
+      properties:
+        name: {type: string, nullable: true}
+        enabled: {type: boolean, nullable: true}
+    PatchSimBody:
+      type: object
+      properties:
+        name: {type: string, nullable: true}
+        enabled: {type: boolean, nullable: true}
+    SimBody:
+      type: object
+      properties:
+        sim_id: {type: string, nullable: true}
+    SendBody:
+      type: object
+      required: [to, text]
+      properties:
+        sim_id: {type: string, nullable: true}
+        to: {type: string}
+        text: {type: string}
+    AtBody:
+      type: object
+      required: [cmd]
+      properties:
+        sim_id: {type: string, nullable: true}
+        cmd: {type: string}
+        timeout_ms: {type: integer, minimum: 100, maximum: 15000, default: 3000}
+
+    # ── 消息 ──
+    Message:
+      type: object
+      required: [id, sim_id, sim_name, device_mac, device_msg_id, gw_epoch, sender, text, received_at, code]
+      properties:
+        id: {type: integer, description: Hub 全局 id}
+        sim_id: {type: string}
+        sim_name: {type: string}
+        device_mac: {type: string}
+        device_msg_id: {type: integer}
+        gw_epoch: {type: integer}
+        sender: {type: string}
+        sender_alias: {type: string, nullable: true}
+        text: {type: string}
+        scts: {type: string, nullable: true, description: 'YYMMDDhhmmsszz 14 位'}
+        received_at: {type: string}
+        code: {type: string, nullable: true, description: extract_code 提取的验证码}
+        complete: {type: integer, description: '0/1'}
+        truncated: {type: integer, description: '0/1'}
+        blocked: {type: integer, description: '0/1(命中黑名单)'}
+        created_at: {type: string}
+        brand: {type: string, nullable: true, description: extract_brand 提取的品牌}
+
+    NotifyJob:
+      type: object
+      properties:
+        channel: {type: string}
+        status: {type: string, enum: [pending, ok, retry, give_up]}
+        attempts: {type: integer}
+        last_error: {type: string}
+        created_at: {type: string}
+      required: [channel, status, attempts, last_error]
+
+    MessageDetail:
+      allOf:
+        - $ref: '#/components/schemas/Message'
+        - type: object
+          properties:
+            notify:
+              type: array
+              items: {$ref: '#/components/schemas/NotifyJob'}
+          required: [notify]
+
+    # ── 发件 ──
+    Outbound:
+      type: object
+      required: [id, sim_id, device_mac, to_phone, text, device_msg_id, status, parts, attempts, next_attempt_ts, source, last_error, created_at]
+      properties:
+        id: {type: integer}
+        sim_id: {type: string}
+        device_mac: {type: string}
+        to_phone: {type: string}
+        text: {type: string}
+        device_msg_id: {type: integer, nullable: true}
+        status: {type: string, enum: [pending, retry, sent, give_up]}
+        parts: {type: integer}
+        attempts: {type: integer}
+        next_attempt_ts: {type: number}
+        source: {type: string, description: 'webui / admin_relay / telegram'}
+        last_error: {type: string}
+        created_at: {type: string}
+
+    SendResponse:
+      type: object
+      required: [ok, queued, id, parts, sim_id, device_mac]
+      properties:
+        ok: {type: boolean}
+        queued: {type: boolean}
+        id: {type: integer, description: outbound 行 id}
+        parts: {type: integer}
+        sim_id: {type: string}
+        device_mac: {type: string}
+
+    Contact:
+      type: object
+      required: [phone, alias, updated_at]
+      properties:
+        phone: {type: string}
+        alias: {type: string}
+        updated_at: {type: string}
+
+    # ── 状态 ──
+    StatusHub:
+      type: object
+      required: [sim_id, sim_name, device_mac, stored_total, cursor, last_poll_ago_s, last_hook_ago_s, poll_interval_s, device_busy]
+      properties:
+        sim_id: {type: string}
+        sim_name: {type: string}
+        device_mac: {type: string}
+        stored_total: {type: integer}
+        cursor: {type: integer}
+        last_poll_ago_s: {type: integer}
+        last_hook_ago_s: {type: integer}
+        poll_interval_s: {type: integer}
+        device_busy: {type: string}
+
+    StatusResponse:
+      type: object
+      required: [device, device_reachable, overall_online, heartbeat_online, data_plane_online, device_status_age_s, hub]
+      properties:
+        device: {$ref: '#/components/schemas/DeviceStatus'}
+        device_reachable: {type: boolean, description: overall_online 的兼容别名}
+        overall_online: {type: boolean}
+        heartbeat_online: {type: boolean}
+        data_plane_online: {type: boolean}
+        device_status_age_s: {type: integer}
+        hub: {$ref: '#/components/schemas/StatusHub'}
+
+    PollResponse:
+      type: object
+      required: [ok, sim_id, device_mac, inserted]
+      properties:
+        ok: {type: boolean}
+        sim_id: {type: string}
+        device_mac: {type: string}
+        inserted: {type: integer}
+    RefreshResponse:
+      type: object
+      required: [ok, sim_id, device_mac, age_s]
+      properties:
+        ok: {type: boolean}
+        sim_id: {type: string}
+        device_mac: {type: string}
+        age_s: {type: integer}
+    ClearBufferResponse:
+      type: object
+      required: [ok, sim_id, device_mac, deleted]
+      properties:
+        ok: {type: boolean}
+        sim_id: {type: string}
+        device_mac: {type: string}
+        deleted: {type: integer}
+    AtResponse:
+      type: object
+      description: 透传设备响应;失败原因放 response,无 error 字段
+      required: [ok, response]
+      properties:
+        ok: {type: boolean}
+        response: {type: string}
+
+    # ── 配置/通知 ──
+    NotifyChannelConfig:
+      type: object
+      description: 通知通道配置(按 type 不同字段不同);telegram 含 bot_token/bot_token_set/chat_id 等
+      additionalProperties: true
+      properties:
+        bot_token: {type: string}
+        bot_token_set: {type: boolean, description: GET 时不回明文,只回是否已设置}
+        chat_id: {type: string}
+        api_base: {type: string}
+        to: {type: string}
+        url: {type: string}
+        template: {type: string}
+
+    NotifyChannel:
+      type: object
+      required: [id, type, name, enabled, config]
+      properties:
+        id: {type: string}
+        type: {type: string, enum: [telegram, sms_forward, webhook_json, webhook_get]}
+        name: {type: string}
+        enabled: {type: boolean}
+        config: {$ref: '#/components/schemas/NotifyChannelConfig'}
+
+    Config:
+      type: object
+      required: [device_token_tail, tg_manage_enabled, notify_channels, admin_phone, default_send_sim_id, blacklist, poll_interval, keepalive_interval_days, keepalive_ping_host, tombstone_keep_days, message_keep_days]
+      properties:
+        device_token_tail: {type: string, description: DEVICE_TOKEN 末 4 位}
+        tg_manage_enabled: {type: boolean}
+        notify_channels:
+          type: array
+          items: {$ref: '#/components/schemas/NotifyChannel'}
+        admin_phone: {type: string}
+        default_send_sim_id: {type: string}
+        blacklist: {type: string, description: 逗号分隔}
+        poll_interval: {type: integer}
+        keepalive_interval_days: {type: number}
+        keepalive_ping_host: {type: string}
+        tombstone_keep_days: {type: integer}
+        message_keep_days: {type: integer}
+
+    ConfigBody:
+      type: object
+      description: 所有字段可选(部分更新)
+      properties:
+        notify_channels:
+          type: array
+          items: {$ref: '#/components/schemas/NotifyChannel'}
+        tg_manage_enabled: {type: boolean}
+        admin_phone: {type: string}
+        default_send_sim_id: {type: string}
+        blacklist: {type: string}
+        poll_interval: {type: integer}
+        keepalive_interval_days: {type: number}
+        keepalive_ping_host: {type: string}
+        tombstone_keep_days: {type: integer}
+        message_keep_days: {type: integer}
+
+    NotifyTestBody:
+      type: object
+      required: [channel]
+      properties:
+        channel: {type: string, description: 通知通道 id}
+
+    NotifyTestResponse:
+      type: object
+      required: [ok, error]
+      properties:
+        ok: {type: boolean}
+        error: {type: string}
+
+    # ── SSE ──
+    SSEEvent:
+      type: object
+      required: [type]
+      properties:
+        type: {type: string, enum: [new_messages, device, outbound]}
+        sim_id: {type: string}
+        device_mac: {type: string}
+        count: {type: integer, description: new_messages 专属}
+        online: {type: boolean, description: device 专属}
+        id: {type: integer, description: outbound 专属(outbound 行 id)}
+
+    # ── 设备固件响应 ──
+    PullMessage:
+      type: object
+      required: [device_msg_id, from, scts, age_s, text, complete, truncated]
+      properties:
+        device_msg_id: {type: integer}
+        from: {type: string}
+        scts: {type: string}
+        age_s: {type: integer, description: '-1 表示断电恢复,Hub 用 scts 兜底'}
+        text: {type: string}
+        complete: {type: boolean}
+        truncated: {type: boolean}
+
+    PullResponse:
+      type: object
+      required: [mac, buffer, messages, status]
+      properties:
+        mac: {type: string}
+        buffer: {$ref: '#/components/schemas/BufferSummary'}
+        messages:
+          type: array
+          items: {$ref: '#/components/schemas/PullMessage'}
+        status:
+          nullable: true
+          type: object
+          description: include_status=1 时为 {modem:{...身份字段}},否则 null
+          properties:
+            modem: {$ref: '#/components/schemas/ModemSnapshot'}
+
+    DeviceSendResponse:
+      type: object
+      required: [ok, device_msg_id, parts]
+      properties:
+        ok: {type: boolean}
+        device_msg_id: {type: integer, description: 失败时为 0}
+        parts: {type: integer}
+        error: {type: string, description: 仅失败时出现}
+
+    DeleteItem:
+      type: object
+      required: [device_msg_id, found]
+      properties:
+        device_msg_id: {type: integer}
+        found: {type: boolean}
+    DeleteResponse:
+      type: object
+      required: [ok, deleted]
+      properties:
+        ok: {type: boolean}
+        deleted:
+          type: array
+          items: {$ref: '#/components/schemas/DeleteItem'}
+
+    DeviceAtBody:
+      type: object
+      required: [cmd]
+      properties:
+        cmd: {type: string}
+        timeout_ms: {type: integer, minimum: 100, maximum: 15000, default: 3000}
+    DeviceAtResponse:
+      type: object
+      description: 失败原因放 response(如 TIMEOUT),ok=false;无 error 字段
+      required: [ok, response]
+      properties:
+        ok: {type: boolean}
+        response: {type: string}
+
+    DeviceStatus:
+      type: object
+      description: 设备完整快照(heartbeat/boot body 或 /status 响应)
+      properties:
+        fw: {type: string}
+        uptime_s: {type: integer}
+        free_heap: {type: integer}
+        min_free_heap: {type: integer}
+        wifi_rssi: {type: integer}
+        wifi_ssid: {type: string}
+        reset_reason: {type: string}
+        last_error: {type: string}
+        heartbeat_interval_s: {type: integer}
+        modem: {$ref: '#/components/schemas/ModemSnapshot'}
+        buffer: {$ref: '#/components/schemas/BufferSummary'}
+        counters: {$ref: '#/components/schemas/Counters'}

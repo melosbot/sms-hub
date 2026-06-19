@@ -1,0 +1,17 @@
+services:
+  sms-hub:
+    build:
+      context: .
+      dockerfile: core/Dockerfile
+    container_name: sms-hub
+    ports:
+      - "8025:8025"
+    volumes:
+      - sms-hub-data:/data
+    env_file:
+      - .env
+    restart: unless-stopped
+
+volumes:
+  sms-hub-data:
+    name: sms-hub-data

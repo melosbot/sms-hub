@@ -1,0 +1,6 @@
+requirements-dev.txt
+Dockerfile
+.dockerignore
+__pycache__
+*.pyc
+*.pyo
