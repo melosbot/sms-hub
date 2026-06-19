@@ -187,6 +187,10 @@ docs/       架构 / API / 开发与部署文档
 
 - [chenxuuu/sms_forwarding](https://github.com/chenxuuu/sms_forwarding) — 本项目的灵感来源，提供了 ESP32C3 + ML307R-DC 硬件方案和 PDU 编解码的初始思路。
 
+## 社区
+
+本项目在 [LINUX DO](https://linux.do/) 社区分享与讨论 —— 一个活跃的中文技术交流社区,感谢社区的支持与反馈。社区主页:https://linux.do/
+
 ## 许可证
 
 MIT，见 [LICENSE](LICENSE)。
