@@ -1,8 +1,8 @@
 # sms-hub 运维操作指南（v2）
 
 > 本地开发 · 测试 · Docker 部署 · 备份恢复 · 固件刷写。系统设计见 [guide.md](guide.md)；接口契约见 [openapi.yaml](openapi.yaml)；可靠性路线图见 [../TODO.md](../TODO.md)。
-
-> **v2 是全新安装**（`SCHEMA_VERSION=4`），升级前须删除旧 `sms.db`。设备共用全局 `DEVICE_TOKEN`，以 MAC 区分物理设备，SIM 卡以 IMSI 派生的 `sim_id` 标识。
+>
+> v2 是全新安装（`SCHEMA_VERSION=4`），升级前须删除旧 `sms.db`。设备共用全局 `DEVICE_TOKEN`，以 MAC 区分物理设备，SIM 卡以 IMSI 派生的 `sim_id` 标识。
 
 ## 目录
 
@@ -18,7 +18,7 @@
 
 ### 一键 demo 栈（推荐）
 
-仓库自带 `test/demo/demo` 脚本，一条命令拉起 Hub + mock 设备，适合开发与演示 Web UI：
+仓库自带 `test/demo/demo` 脚本，一条命令拉起 Hub + mock 设备，适合开发和调试 Web UI：
 
 ```bash
 test/demo/demo start
@@ -43,9 +43,9 @@ DEMO_SECOND_DEVICE_PORT=8081 test/demo/demo start
 #   Mock 控制台 2: http://127.0.0.1:8081/  (MAC 112233445566)
 ```
 
-demo 栈自动开启 `ALLOW_LOOPBACK_DEVICE=1`（Hub 与 mock 同机时放行 loopback 设备地址，**生产环境务必关闭**）。升级到 v2 前若 `test/demo/data/sms.db` 是旧版，需先删除：`find test/demo/data -name '*.db*' -delete`。
+demo 栈自动开启 `ALLOW_LOOPBACK_DEVICE=1`（Hub 与 mock 同机时放行 loopback 设备地址，生产环境须关闭）。升级到 v2 前若 `test/demo/data/sms.db` 是旧版，需先删除：`find test/demo/data -name '*.db*' -delete`。
 
-> **注意**：手动跑 Hub 时请显式指定 `DATA_DIR`；demo 栈固定写入 `test/demo/data/`，Docker 部署写入 Docker volume `/data`。`restart --fresh` 若失效，先用 `ss -ltnp` 对比端口 pid，防孤儿 Hub 占 8025。
+> 手动跑 Hub 时请显式指定 `DATA_DIR`；demo 栈固定写入 `test/demo/data/`，Docker 部署写入 Docker volume `/data`。`restart --fresh` 若失效，先用 `ss -ltnp` 对比端口 pid，防孤儿 Hub 占 8025。
 
 ### 手动起 Hub
 
@@ -111,7 +111,7 @@ docs/          guide.md（设计+接口）/ operations.md（本文）/ openapi.y
 | `test_notifier` | 通知通道投递与重试 → 放弃；钉钉/飞书签名对照官方算法；6 渠道 format/target |
 | `test_poller` | SCTS 解析、`age_s` 时间回推、原子入库、游标回退自愈 |
 | `test_rules_auth` | 号码归一化、黑名单、登录令牌往返 / 过期 / 篡改 |
-| `test_sender` | 出站队列发送成功与重试；**不故障转移**（禁用卡/离线 → give_up，不转其他卡，见 docs/guide.md §5.3） |
+| `test_sender` | 出站队列发送成功与重试；不故障转移（禁用卡/离线 → give_up，不转其他卡，见 docs/guide.md §5.3） |
 | `test_status` | `/api/status` 心跳 / 数据双平面在线判定 |
 | `test_v2_multi` | 多设备硬约束：sim_id 派生、临时卡合并、跨设备同编号不冲突、墓碑隔离、并发池上限、SSRF |
 
@@ -182,7 +182,7 @@ docker run --rm -v sms-hub-data:/data:ro -v "$PWD/backups:/backup" alpine \
 docker compose start sms-hub
 ```
 
-> SQLite 开了 WAL，**别直接 `cp`**——用 `sqlite3 .backup` 或停服后 `tar`（上例）。恢复：停 Hub，把备份包解回 `sms-hub-data` volume，再启动 Hub。定期把 `backups/` 纳入 Homelab 常规备份。
+> SQLite 开了 WAL，别直接 `cp`。用 `sqlite3 .backup` 或停服后 `tar`（上例）。恢复：停 Hub，把备份包解回 `sms-hub-data` volume，再启动 Hub。定期把 `backups/` 纳入 Homelab 常规备份。
 
 ---
 
@@ -190,7 +190,7 @@ docker compose start sms-hub
 
 > 只刷 ESP32-C3。ML307R-DC / 短信宝 4G 模组继续用默认 AT 固件，不需要刷。
 >
-> **先备份，再刷机**。没确认备份文件有效前，不要执行 `erase-flash` 或 IDE 的 "Erase All Flash"。
+> 先备份，再刷机。没确认备份文件有效前，不要执行 `erase-flash` 或 IDE 的 "Erase All Flash"。
 
 ### 准备配置
 
@@ -227,7 +227,7 @@ arduino-cli lib install pdulib
 
 ### 编译与有线刷写
 
-**分区方案必须选 `Huge APP (3MB No OTA/1MB SPIFFS)`**——本项目不支持 OTA 固件升级，所有固件更新均需 USB 有线刷写。
+分区方案必须选 `Huge APP (3MB No OTA/1MB SPIFFS)`。本项目不支持 OTA 固件升级，所有固件更新均需 USB 有线刷写。
 
 ```bash
 # 仓库内工具链

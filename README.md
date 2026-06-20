@@ -1,6 +1,6 @@
 # sms-hub
 
-把 4G 短信变成手机通知。插一张 SIM 卡，插上网线，**短信自动推到 Telegram / 钉钉 / 飞书 / Bark / Webhook**。也能从手机回复、群发、查历史。
+把 4G 短信变成手机通知。插一张 SIM 卡，插上网线，短信自动推到 Telegram / 钉钉 / 飞书 / Bark / Webhook。也能从手机回复、群发、查历史。
 
 ```
 SIM 卡 → ESP32C3 → 4G 模组 ──webhook──► Hub (Docker) ──通知──► 你的手机
@@ -71,7 +71,7 @@ arduino-cli lib install pdulib
 cp firmware/config.example.h firmware/config.h
 ```
 
-编辑 `firmware/config.h`，**改这 4 项**：
+编辑 `firmware/config.h`，改这 4 项：
 
 ```c
 #define WIFI_SSID   "你家WiFi名"
@@ -96,7 +96,7 @@ arduino-cli upload -p /dev/ttyUSB0 \
   ./firmware/firmware.ino
 ```
 
-> **分区方案必须选 `Huge APP`**。本项目不支持 OTA 升级，每次更新都 USB 有线刷。
+> 分区方案必须选 `Huge APP`。本项目不支持 OTA 升级，每次更新都 USB 有线刷。
 
 刷完后打开串口监视器（`115200 baud`），看到 `启动完成` 即成功。
 
@@ -120,7 +120,7 @@ docker compose up -d
 
 打开 `http://你的IP:8025`，账号 `admin`，密码是你设的 `WEBUI_PASS`。
 
-发送一条短信到 SIM 卡，10 秒内 Web UI 收件箱就会出现。
+发送一条短信到 SIM 卡，几秒内 Web UI 收件箱就会出现。
 
 ### 配置 Telegram 通知
 
@@ -153,6 +153,12 @@ docs/        架构设计 · 接口契约 · 运维手册
 | 架构设计、数据模型、接口契约 | [docs/guide.md](docs/guide.md) |
 | 部署、备份、固件刷写、真机回归 | [docs/operations.md](docs/operations.md) |
 | 固件可靠性路线图 | [TODO.md](TODO.md) |
+
+---
+
+## 社区
+
+感谢 [linux.do](https://linux.do) 社区的朋友们在项目早期提供的反馈、测试和建议。
 
 ---
 
