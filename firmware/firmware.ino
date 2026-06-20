@@ -1570,14 +1570,30 @@ void maintainWebhookIpReport() {
 }
 
 // ───────────────────────── HTTP API ─────────────────────────
-// 辅助:将 snprintf 结果追加到 String,避免临时 String 分配
+// 辅助:将 snprintf 结果完整追加到 String。常见字段走栈缓冲,超长时按需分配,
+// 避免数值位数增长后静默截断并破坏 JSON。
 static void appendf(String& s, const char* fmt, ...) {
-  char buf[24];
+  char buf[48];
   va_list ap;
   va_start(ap, fmt);
-  vsnprintf(buf, sizeof(buf), fmt, ap);
+  int needed = vsnprintf(buf, sizeof(buf), fmt, ap);
   va_end(ap);
-  s += buf;
+  if (needed < 0) return;
+  if ((size_t)needed < sizeof(buf)) {
+    s.concat(buf, (unsigned int)needed);
+    return;
+  }
+
+  char* expanded = (char*)malloc((size_t)needed + 1);
+  if (!expanded) {
+    Serial.println("JSON 字段格式化失败:内存不足");
+    return;
+  }
+  va_start(ap, fmt);
+  vsnprintf(expanded, (size_t)needed + 1, fmt, ap);
+  va_end(ap);
+  s.concat(expanded, (unsigned int)needed);
+  free(expanded);
 }
 
 void handleStatus() {
