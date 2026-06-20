@@ -31,9 +31,10 @@ def test_format_incoming_markdown_layout():
     })
 
     # 验证码挂在标题右侧(反引号 code,可一点即复制)
-    assert out.startswith("📥 *新收件* · 🔐 `114514`\n\n")
-    assert "发件人:13800138000" in out
-    assert "时间:2026-06-14 10:00" in out
+    assert out.startswith("📥 *新短信*")
+    assert "🔐 `114514`" in out
+    assert "发件人：*13800138000*" in out
+    assert "时　间：2026-06-14 10:00" in out
     assert out.endswith("您的验证码是 114514")
     # Markdown 模式不应出现 HTML 标签
     assert "<" not in out and ">" not in out
@@ -57,7 +58,7 @@ def test_format_incoming_without_code():
     })
     # 无验证码:标题不带 🔐 标记
     assert "🔐" not in out
-    assert out.startswith("📥 *新收件*\n\n")
+    assert out.startswith("📥 *新短信*\n\n")
     assert out.endswith("欠费提醒")
 
 
@@ -126,7 +127,7 @@ def test_attempt_telegram_uses_markdown(monkeypatch):
     monkeypatch.setattr(notifier.config, "NOTIFY_CHANNELS", [_telegram_channel()])
     monkeypatch.setattr(notifier, "_send_telegram_channel", fake_send)
 
-    job = {"channel": "telegram", "target": "42", "text": "📥 *新收件*"}
+    job = {"channel": "telegram", "target": "42", "text": "📥 *新短信*"}
     ok, err = asyncio.run(notifier._attempt(job))
 
     assert ok is True and err == ""
@@ -308,7 +309,11 @@ def test_format_for_channel_sms_forward_template():
 
 def test_format_for_channel_sms_forward_default_backcompat():
     ch = {"type": "sms_forward", "config": {}}
-    assert notifier._format_for_channel(ch, _ctx()) == "[13800138000] 您的验证码是 114514"
+    out = notifier._format_for_channel(ch, _ctx())
+    assert "📥 新短信" in out
+    assert "发件人：13800138000" in out
+    assert "验证码：114514" in out
+    assert "您的验证码是 114514" in out
 
 
 def test_format_for_channel_telegram_template_plain():
@@ -318,7 +323,7 @@ def test_format_for_channel_telegram_template_plain():
 
 def test_format_for_channel_telegram_default_backcompat():
     ch = {"type": "telegram", "config": {}}
-    assert notifier._format_for_channel(ch, _ctx()).startswith("📥 *新收件*")
+    assert notifier._format_for_channel(ch, _ctx()).startswith("📥 *新短信*")
 
 
 def test_format_for_channel_webhook_json_template_valid_json():
@@ -407,13 +412,17 @@ def test_feishu_sign_matches_official_algorithm():
 def test_format_for_channel_dingtalk_default_text_body():
     ch = {"type": "dingtalk", "config": {}}
     out = notifier._format_for_channel(ch, _ctx(text="验证码 114514"))
-    assert json.loads(out) == {"msgtype": "text", "text": {"content": "[13800138000] 验证码 114514"}}
+    content = json.loads(out)["text"]["content"]
+    assert "📥 新短信" in content
+    assert "发件人：13800138000" in content
 
 
 def test_format_for_channel_feishu_default_text_body():
     ch = {"type": "feishu", "config": {}}
     out = notifier._format_for_channel(ch, _ctx(text="hi"))
-    assert json.loads(out) == {"msg_type": "text", "content": {"text": "[13800138000] hi"}}
+    content = json.loads(out)["content"]["text"]
+    assert "📥 新短信" in content
+    assert "发件人：13800138000" in content
 
 
 def test_format_for_channel_dingtalk_template_renders():
@@ -497,7 +506,9 @@ def test_send_signed_bot_without_secret_posts_plain(monkeypatch):
 def test_format_for_channel_bark():
     ch = {"type": "bark", "config": {}}
     out = notifier._format_for_channel(ch, _ctx(text="验证码"))
-    assert json.loads(out) == {"title": "13800138000", "body": "验证码"}
+    data = json.loads(out)
+    assert data["title"] == "🔐 114514"
+    assert "验证码" in data["body"]
 
 
 def test_format_for_channel_pushplus_injects_token_and_channel():
@@ -505,7 +516,7 @@ def test_format_for_channel_pushplus_injects_token_and_channel():
     out = json.loads(notifier._format_for_channel(ch, _ctx(text="hi")))
     assert out["token"] == "TOK"
     assert out["channel"] == "app"
-    assert out["title"] == "短信来自: 13800138000"
+    assert out["title"] == "🔐 114514"
     assert "hi" in out["content"]
 
 
@@ -518,7 +529,7 @@ def test_format_for_channel_pushplus_default_channel():
 def test_format_for_channel_serverchan_title_desp():
     out = json.loads(notifier._format_for_channel(
         {"type": "serverchan", "config": {}}, _ctx(text="内容X")))
-    assert out["title"] == "短信来自: 13800138000"
+    assert out["title"] == "🔐 114514"
     assert "内容X" in out["desp"]
 
 
@@ -526,7 +537,7 @@ def test_format_for_channel_gotify_priority():
     out = json.loads(notifier._format_for_channel(
         {"type": "gotify", "config": {}}, _ctx(text="hi")))
     assert out["priority"] == 5
-    assert out["title"] == "短信来自: 13800138000"
+    assert out["title"] == "🔐 114514"
     assert "hi" in out["message"]
 
 

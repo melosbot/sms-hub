@@ -183,19 +183,29 @@ def _format_delivery_error(e: Exception) -> str:
     return str(e)[:500]
 
 
-def format_incoming(m: dict) -> str:
-    """新收件通知(Markdown):标题加粗(有验证码则挂右侧) → 发件人/时间 → 正文。"""
-    title = f"📥 *{_md('新收件')}*"
+def _plain_incoming(m: dict) -> str:
+    """纯文本新短信通知(短信转发、钉钉、飞书等通道共用)。"""
+    lines = ["📥 新短信", f"发件人：{m['sender']}"]
     if m.get("code"):
-        # 验证码挂在标题右侧(与发件 ·✅已送达 同款),反引号 code 可一点即复制
-        title += f" · 🔐 `{m['code']}`"
-    parts = [
+        lines.append(f"验证码：{m['code']}")
+    lines.append(f"时间：{m['received_at']}")
+    lines.append("")
+    lines.append(m["text"])
+    return "\n".join(lines)
+
+
+def format_incoming(m: dict) -> str:
+    """Telegram 新短信通知(Markdown)。"""
+    title = "📥 *新短信*"
+    if m.get("code"):
+        title += f"　🔐 `{m['code']}`"
+    lines = [
         title, "",
-        f"发件人:{_md(m['sender'])}",
-        f"时间:{_md(m['received_at'])}",
+        f"发件人：*{_md(m['sender'])}*",
+        f"时　间：{_md(m['received_at'])}",
         "", _md(m["text"]),
     ]
-    return "\n".join(parts)
+    return "\n".join(lines)
 
 
 def format_outgoing(*, to_phone: str, text: str, ok: bool, ts: str,
@@ -343,38 +353,38 @@ def _format_for_channel(channel: dict, m: dict) -> str:
     if typ == "telegram":
         return _render_template(tpl, m) if tpl else format_incoming(m)
     if typ == "sms_forward":
-        return _render_template(tpl, m) if tpl else f"[{m['sender']}] {m['text']}"
+        return _render_template(tpl, m) if tpl else _plain_incoming(m)
     if typ == "webhook_json" and tpl:
         return _render_template(tpl, m, escape="json")
     if typ in ("dingtalk", "feishu"):
-        # 钉钉/飞书文本消息;content 走 template(默认: 发件人 + 正文)。
-        content = _render_template(tpl, m) if tpl else f"[{m.get('sender', '')}] {m.get('text', '')}"
+        content = _render_template(tpl, m) if tpl else _plain_incoming(m)
         if typ == "dingtalk":
             return json.dumps({"msgtype": "text", "text": {"content": content}},
                               ensure_ascii=False)
         return json.dumps({"msg_type": "text", "content": {"text": content}},
                           ensure_ascii=False)
     if typ == "bark":
-        body = _render_template(tpl, m) if tpl else m.get("text", "")
-        return json.dumps({"title": m.get("sender", ""), "body": body}, ensure_ascii=False)
+        body = _render_template(tpl, m) if tpl else _plain_incoming(m)
+        title = m.get("code") and f"🔐 {m['code']}" or "📥 新短信"
+        return json.dumps({"title": title, "body": body}, ensure_ascii=False)
     if typ == "pushplus":
         channel = str(cfg.get("channel", "")).strip() or "wechat"
-        content = (_render_template(tpl, m) if tpl
-                   else f"<b>发送者:</b> {m.get('sender', '')}<br><b>内容:</b><br>{m.get('text', '')}")
+        text = _render_template(tpl, m) if tpl else _plain_incoming(m)
+        content = text.replace("\n", "<br>")
+        title = m.get("code") and f"🔐 {m['code']}" or "📥 新短信"
         return json.dumps({"token": str(cfg.get("token", "")).strip(),
-                           "title": f"短信来自: {m.get('sender', '')}",
-                           "content": content, "channel": channel}, ensure_ascii=False)
-    if typ == "serverchan":
-        # form-urlencoded:返回 {"title","desp"} JSON,_attempt 以 data= 发送。
-        desp = (_render_template(tpl, m) if tpl
-                else f"**发送者:** {m.get('sender', '')}\n\n**内容:**\n\n{m.get('text', '')}")
-        return json.dumps({"title": f"短信来自: {m.get('sender', '')}", "desp": desp},
+                           "title": title, "content": content, "channel": channel},
                           ensure_ascii=False)
+    if typ == "serverchan":
+        text = _render_template(tpl, m) if tpl else _plain_incoming(m)
+        desp = text.replace("\n", "\n\n")
+        title = m.get("code") and f"🔐 {m['code']}" or "📥 新短信"
+        return json.dumps({"title": title, "desp": desp}, ensure_ascii=False)
     if typ == "gotify":
-        message = (_render_template(tpl, m) if tpl
-                   else f"{m.get('text', '')}\n\n时间: {m.get('received_at', '')}")
-        return json.dumps({"title": f"短信来自: {m.get('sender', '')}",
-                           "message": message, "priority": 5}, ensure_ascii=False)
+        text = _render_template(tpl, m) if tpl else _plain_incoming(m)
+        title = m.get("code") and f"🔐 {m['code']}" or "📥 新短信"
+        return json.dumps({"title": title, "message": text, "priority": 5},
+                          ensure_ascii=False)
     # webhook_json(无模板) 与 webhook_get 的 body 都用固定 JSON
     return json.dumps({
         "sender": m.get("sender", ""),
