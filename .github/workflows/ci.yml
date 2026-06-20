@@ -24,7 +24,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m venv .local/venv
-          .local/venv/bin/pip install -r core/requirements-dev.txt
+          .local/venv/bin/pip install -r core/requirements.txt -r core/requirements-dev.txt
       - name: Run unit tests
         run: .local/venv/bin/python -m pytest -q test/unit
 
