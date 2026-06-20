@@ -377,7 +377,8 @@ def _format_for_channel(channel: dict, m: dict) -> str:
                           ensure_ascii=False)
     if typ == "serverchan":
         text = _render_template(tpl, m) if tpl else _plain_incoming(m)
-        desp = text.replace("\n", "\n\n")
+        # Server酱 Markdown 格式: 标题行后加空行, 其余行不加倍
+        desp = text
         title = m.get("code") and f"🔐 {m['code']}" or "📥 新短信"
         return json.dumps({"title": title, "desp": desp}, ensure_ascii=False)
     if typ == "gotify":
