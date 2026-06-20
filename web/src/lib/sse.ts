@@ -11,6 +11,7 @@ export function useSSE(onEvent?: (e: SSEEvent) => void): boolean {
   const qc = useQueryClient()
   const [connected, setConnected] = useState(false)
   const cbRef = useRef(onEvent)
+  // eslint-disable-next-line react-hooks/refs -- 保持回调引用最新(React 文档推荐的 effect 事件模式)
   cbRef.current = onEvent
 
   useEffect(() => {

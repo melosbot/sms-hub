@@ -117,6 +117,76 @@ def temp_sim_id(mac: str) -> str:
     return f"sim_tmp_{mac}"
 
 
+# ── 身份脱敏:设备快照清洗(§1.5) ──
+
+_SENSITIVE_MODEM_KEYS = {"imsi", "iccid"}
+
+
+def sanitize_device_snapshot(body: dict) -> dict:
+    """从设备状态快照中删除完整身份字段(imsi/iccid),只保留脱敏尾号。
+    幂等:多次调用结果一致。就地修改并返回原 dict。"""
+    modem = body.get("modem")
+    if isinstance(modem, dict):
+        # 从 imsi/iccid 提取尾号(如果 tail 字段尚未存在)
+        imsi = str(modem.pop("imsi", "") or "")
+        if imsi and not modem.get("imsi_tail"):
+            modem["imsi_tail"] = imsi[-4:]
+        iccid = str(modem.pop("iccid", "") or "")
+        if iccid and not modem.get("iccid_tail"):
+            modem["iccid_tail"] = iccid[-4:]
+    return body
+
+
+def sanitize_modem_block(modem: dict | None) -> dict | None:
+    """防御性过滤:从 modem 块中删除完整 imsi/iccid,保留尾号。
+    用于 API 响应前清洗(不信任 DB 历史快照已干净)。返回传入 dict 或其副本。"""
+    if not isinstance(modem, dict):
+        return modem
+    # 浅拷贝避免影响缓存中的原始对象
+    clean = {k: v for k, v in modem.items() if k not in _SENSITIVE_MODEM_KEYS}
+    return clean
+
+
+# ── 设备能力协商(§3.4) ──
+
+# 能力位掩码(与 firmware/config.h 同步)
+CAP_ASYNC_JOB = 1 << 0
+CAP_BATCH_DELETE = 1 << 1
+CAP_MIPCALL = 1 << 2
+CAP_SMS_RX_WATCHDOG = 1 << 3
+CAP_DELETE_QUEUE_STAT = 1 << 4
+CAP_RECOVERY_REASON = 1 << 5
+
+_CAP_LABELS = {
+    CAP_ASYNC_JOB: "async_job",
+    CAP_BATCH_DELETE: "batch_delete",
+    CAP_MIPCALL: "mipcall",
+    CAP_SMS_RX_WATCHDOG: "sms_rx_watchdog",
+    CAP_DELETE_QUEUE_STAT: "delete_queue_stat",
+    CAP_RECOVERY_REASON: "recovery_reason",
+}
+
+
+def device_capabilities(device_snapshot: dict) -> int:
+    """从设备快照中提取 capability 位掩码。设备未上报时返回 0。"""
+    return int(device_snapshot.get("capabilities") or 0)
+
+
+def device_has_cap(device_snapshot: dict, cap: int) -> bool:
+    """检查设备是否具备某项能力。"""
+    return bool(device_capabilities(device_snapshot) & cap)
+
+
+def device_protocol_version(device_snapshot: dict) -> int:
+    """从设备快照中提取协议版本。设备未上报时返回 0(无版本)。"""
+    return int(device_snapshot.get("protocol_version") or 0)
+
+
+def describe_capabilities(mask: int) -> list[str]:
+    """将能力位掩码转为可读标签列表(用于诊断/日志)。"""
+    return [label for bit, label in _CAP_LABELS.items() if mask & bit]
+
+
 # ── SSRF 防护 ──
 
 def validate_device_addr(ip: str, port: int, hub_self: set[str], *,

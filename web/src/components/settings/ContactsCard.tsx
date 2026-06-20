@@ -175,6 +175,7 @@ function ContactDialog({
 
   useEffect(() => {
     if (open) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- 打开编辑对话框时初始化表单
       setPhone(editing?.phone ?? "")
       setAlias(editing?.alias ?? "")
     }

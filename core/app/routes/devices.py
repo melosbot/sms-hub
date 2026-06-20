@@ -33,7 +33,7 @@ def _device_view(row, mgr) -> dict:
         "cursor": int(row["cursor"]),
         "busy": rt.busy_operation() if rt else "",
         "buffer": snap.get("buffer", {}),
-        "modem": snap.get("modem", {}),
+        "modem": client.sanitize_modem_block(snap.get("modem")),
         "current_sim_id": row["current_sim_id"],
     }
 

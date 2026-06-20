@@ -1,5 +1,5 @@
 """保号定时任务(v2:每设备)。每隔 KEEPALIVE_INTERVAL_DAYS 天对每台启用设备
-通过 /at 发起一次极小流量(CGACT=1 激活 → MPING → CGACT=0 省流量)。
+通过 /at 发起一次极小流量(MIPCALL=1 建连 → MPING → MIPCALL=0 省流量)。
 每设备上次执行时间存 kv("keepalive_last_ts:<mac>"),hub 重启不重置。0 = 禁用。"""
 import asyncio
 import logging
@@ -21,13 +21,15 @@ async def _run_for_device(runtime) -> str:
     def at_ok(r: dict) -> bool:
         return bool(r.get("ok")) and "OK" in (r.get("response") or "")
 
-    r1 = await runtime.at("AT+CGACT=1,1", 10000)
+    r1 = await runtime.at("AT+MIPCALL=1,1", 10000)
     await asyncio.sleep(0.5)
-    r2 = await runtime.at(
-        f'AT+MPING="{config.KEEPALIVE_PING_HOST}",10,1', 15000
-    )
-    await asyncio.sleep(1.0)
-    await runtime.at("AT+CGACT=0,1", 5000)
+    try:
+        r2 = await runtime.at(
+            f'AT+MPING="{config.KEEPALIVE_PING_HOST}",10,1', 15000
+        )
+        await asyncio.sleep(1.0)
+    finally:
+        await runtime.at("AT+MIPCALL=0,1", 5000)
 
     ok = at_ok(r1) and at_ok(r2)
     detail = (r2.get("response", "") or "").replace("\r", "").strip()

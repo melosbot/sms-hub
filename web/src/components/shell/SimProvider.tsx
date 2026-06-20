@@ -22,7 +22,7 @@ const SimCtx = createContext<SimCtxValue | null>(null)
  */
 export function SimProvider({ children }: { children: ReactNode }) {
   const { data } = useDevices()
-  const sims = data?.sims ?? []
+  const sims = useMemo(() => data?.sims ?? [], [data?.sims])
   const enabledSims = useMemo(() => sims.filter((s) => s.enabled), [sims])
   const multiple = enabledSims.length > 1
   const [stored, setStored] = useLocalStorage("smshub.sim", "")
@@ -47,6 +47,7 @@ export function SimProvider({ children }: { children: ReactNode }) {
   return <SimCtx.Provider value={value}>{children}</SimCtx.Provider>
 }
 
+// eslint-disable-next-line react-refresh/only-export-components
 export function useSim(): SimCtxValue {
   const v = useContext(SimCtx)
   if (!v) throw new Error("useSim 必须在 SimProvider 内使用")

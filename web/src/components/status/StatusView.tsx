@@ -99,6 +99,7 @@ function StatusBody({ simId, multiple }: { simId: string; multiple: boolean }) {
   const hub = s?.hub
   const [simName, setSimName] = useState(hub?.sim_name ?? "")
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- 同步外部 hub 状态到本地编辑框
     setSimName(hub?.sim_name ?? "")
   }, [hub?.sim_name])
   const level = signalLevel(modem?.csq_dbm ?? -999)
@@ -216,6 +217,38 @@ function StatusBody({ simId, multiple }: { simId: string; multiple: boolean }) {
                   <Stat label="设备 MAC" value={hub?.device_mac ? displayMac(hub.device_mac) : "—"} />
                   <Stat label="设备 IP" value={device?.ip} />
                   <Stat label="设备状态" value={[modem?.model, device?.fw].filter(Boolean).join("/") || "—"} />
+                  <Stat
+                    label="数据连接"
+                    value={
+                      modem?.data_connection_active == null
+                        ? "—"
+                        : modem.data_connection_active
+                          ? "已连接"
+                          : modem.data_guard_ok === false
+                            ? "已关闭（守护重试中）"
+                            : "已关闭"
+                    }
+                  />
+                  <Stat
+                    label="收信配置"
+                    value={
+                      modem?.sms_rx_config_ok === true
+                        ? `正常（恢复 ${modem.sms_rx_recoveries ?? 0} 次）`
+                        : modem?.sms_rx_config_known === false
+                          ? "检查或恢复中"
+                          : "—"
+                    }
+                  />
+                  <Stat
+                    label="删除队列"
+                    value={
+                      device?.delete_queue?.depth
+                        ? `${device.delete_queue.depth} 条待删（失败 ${device.delete_queue.failures ?? 0} 次）`
+                        : device?.delete_queue?.failures
+                          ? `失败 ${device.delete_queue.failures} 次`
+                          : "—"
+                    }
+                  />
                   <Stat label="运行时长" value={formatUptime(device?.uptime_s)} />
                   <Stat label="WiFi SSID" value={device?.wifi_ssid} />
                   <Stat

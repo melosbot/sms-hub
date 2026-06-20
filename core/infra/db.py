@@ -158,9 +158,58 @@ async def open_db() -> aiosqlite.Connection:
     await _db.execute("PRAGMA mmap_size=268435456")  # 256MB mmap 读上限(实际按库大小用)
     await _db.executescript(SCHEMA)
     await _migrate_messages_mms()
+    await _sanitize_device_snapshots()
     await _record_schema_version()
     await _db.commit()
     return _db
+
+
+async def _sanitize_device_snapshots():
+    """清洗 devices.last_status_json 中可能遗留的完整 IMSI/ICCID(§1.5)。
+    幂等:已脱敏行不解码 JSON,无敏感字段不更新。"""
+    import json as _json
+    async with db().execute(
+        "SELECT mac, last_status_json FROM devices WHERE last_status_json <> ''"
+    ) as cur:
+        rows = list(await cur.fetchall())
+    cleaned = 0
+    for r in rows:
+        # 快速跳过:JSON 中不含完整身份字面量时可免解码
+        raw = r["last_status_json"]
+        if '"imsi"' not in raw and '"iccid"' not in raw:
+            continue
+        try:
+            obj = _json.loads(raw)
+        except _json.JSONDecodeError:
+            continue
+        if not isinstance(obj, dict):
+            continue
+        modem = obj.get("modem")
+        if not isinstance(modem, dict):
+            continue
+        changed = False
+        # 保留用 imsi/iccid 提取的尾号(若快照中 tail 尚未存在)
+        imsi = str(modem.pop("imsi", "") or "")
+        if imsi:
+            changed = True
+            if not modem.get("imsi_tail"):
+                modem["imsi_tail"] = imsi[-4:]
+        iccid = str(modem.pop("iccid", "") or "")
+        if iccid:
+            changed = True
+            if not modem.get("iccid_tail"):
+                modem["iccid_tail"] = iccid[-4:]
+        if changed:
+            await db().execute(
+                "UPDATE devices SET last_status_json=? WHERE mac=?",
+                (_json.dumps(obj, ensure_ascii=False), r["mac"]),
+            )
+            cleaned += 1
+    if cleaned:
+        import logging
+        logging.getLogger("db").info(
+            "已清洗 %d 个含完整身份的设备快照", cleaned
+        )
 
 
 async def _migrate_messages_mms():

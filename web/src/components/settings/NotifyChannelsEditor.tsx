@@ -158,6 +158,7 @@ function NotifyChannelsForm({
     })
 
   const addPreset = (p: Preset) => {
+    // eslint-disable-next-line react-hooks/purity -- event handler 中生成临时 id,非渲染期间调用
     const id = `${p.type}-${Math.random().toString(36).slice(2, 6)}`
     const ch: NotifyChannel = {
       id,

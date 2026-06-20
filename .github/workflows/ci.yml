@@ -1,0 +1,94 @@
+# CI: Python 单测 + 固件宿主编译测试 + Web 构建 + ESLint(§3.7)
+# 触发:push 到所有分支 + PR。docker 发布见 docker-publish.yml。
+name: CI
+
+on:
+  push:
+    branches: ['*']
+  pull_request:
+    branches: [main, dev]
+  workflow_dispatch:
+
+jobs:
+  # ── Python 单元测试 ──
+  python-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: core/requirements-dev.txt
+      - name: Install dependencies
+        run: |
+          python -m venv .local/venv
+          .local/venv/bin/pip install -r core/requirements-dev.txt
+      - name: Run unit tests
+        run: .local/venv/bin/python -m pytest -q test/unit
+
+  # ── 固件宿主编译测试(modem_* 核心,不依赖 Arduino) ──
+  firmware-host-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile and run modem_core
+        run: |
+          g++ -std=c++17 -Wall -Wextra -Werror \
+            -I firmware \
+            firmware/modem_line_reader.cpp \
+            firmware/modem_policy.cpp \
+            test/firmware/test_modem_core.cpp \
+            -o /tmp/test_modem_core && /tmp/test_modem_core
+      - name: Compile and run modem_concat
+        run: |
+          g++ -std=c++17 -Wall -Wextra -Werror \
+            -I firmware \
+            test/firmware/test_modem_concat.cpp \
+            -o /tmp/test_modem_concat && /tmp/test_modem_concat
+      - name: Compile and run modem_io_core
+        run: |
+          g++ -std=c++17 -Wall -Wextra -Werror \
+            -I firmware \
+            firmware/modem_io_core.cpp \
+            test/firmware/test_modem_io_core.cpp \
+            -o /tmp/test_modem_io_core && /tmp/test_modem_io_core
+
+  # ── Web 前端:TypeScript 类型检查 + ESLint + 生产构建 ──
+  web:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Install dependencies
+        run: npm ci
+      - name: Lint
+        run: npm run lint
+      - name: Build
+        run: npm run build
+
+  # ── OpenAPI 契约校验 ──
+  openapi-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: core/requirements-dev.txt
+      - name: Install PyYAML
+        run: pip install pyyaml
+      - name: Validate OpenAPI
+        run: python -c "import yaml; yaml.safe_load(open('docs/openapi.yaml')); print('OpenAPI YAML valid')"

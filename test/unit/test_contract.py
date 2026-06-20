@@ -2,7 +2,7 @@
 
 三层契约,任何一层失配都说明「代码 / 文档 / 前端」三者之一漂移了:
 
-1. **Hub API**:`docs/openapi.yaml` 中由 Hub 提供的路径(/api/*、/hook/*、/metrics)
+1. **Hub API**:`docs/openapi.yaml` 中由 Hub 提供的路径(/api/*、/hook/*)
    必须 **==** 运行时 FastAPI `app.openapi()` 生成的路径集合。
 2. **前端调用**:`web/src/lib/api.ts` 发出的每个 (method, path) 都必须在 Hub 已注册——
    防止前端调了一个后端不存在或已改名的端点(404)。
@@ -136,6 +136,5 @@ def test_status_routes_present():
         ("POST", "/api/buffer/clear"),
         ("POST", "/api/poll"),
         ("POST", "/api/at"),
-        ("GET", "/metrics"),
     ]:
         assert expected in rt, f"诊断端点 {expected} 未注册"

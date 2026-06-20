@@ -172,6 +172,16 @@ def modem_snapshot() -> dict:
         "msisdn": MSISDN,
         "flight_mode": FLIGHT_MODE,
         "pdp_active": current_pdp(),
+        "data_connection_active": current_pdp(),
+        "data_guard_ok": True,
+        "data_guard_failures": 0,
+        "sms_rx_config_known": True,
+        "sms_rx_config_ok": True,
+        "sms_rx_last_check_ms": int((time.time() - BOOT_TIME) * 1000),
+        "sms_rx_last_config_ms": 0,
+        "sms_rx_recoveries": 0,
+        "sms_rx_failures": 0,
+        "sms_rx_last_recovery_reason": 0,
         "apn": APN,
     }
 
@@ -183,6 +193,8 @@ def status_payload() -> dict:
         "seq_id": SEQ_ID,
         "device_ts_ms": int(time.time() * 1000),
         "fw": FW_VERSION,
+        "protocol_version": 1,
+        "capabilities": 0x3F,  # bits 0-5: async_job|batch_delete|mipcall|watchdog|delete_queue|recovery_reason
         "heartbeat_interval_s": HEARTBEAT_INTERVAL_S,
         "uptime_s": int(uptime),
         "reset_reason": "POWERON",
@@ -203,6 +215,11 @@ def status_payload() -> dict:
             "rx_total": RX_TOTAL,
             "tx_total": SENT_COUNT,
             "webhook_fail_total": WEBHOOK_FAIL_TOTAL,
+        },
+        "delete_queue": {
+            "depth": 0,
+            "oldest_age_ms": 0,
+            "failures": 0,
         },
         "last_error": "" if radio_online() else "radio is disabled by CFUN",
     }
@@ -335,6 +352,16 @@ async def device_at(token: str, request: Request):
         resp = at_ok(f"+CGACT: 1,{1 if current_pdp() else 0}")
     elif cmd.startswith("AT+CGACT="):
         m = re.match(r"AT\+CGACT=(\d+),(\d+)", cmd)
+        if not m:
+            resp = at_error(50)
+        else:
+            PDP_ACTIVE = m.group(1) == "1" and radio_online()
+            resp = at_ok()
+    elif cmd == "AT+MIPCALL?":
+        resp = at_ok(f'+MIPCALL: 1,{1 if current_pdp() else 0}' +
+                     (',"10.66.88.12"' if current_pdp() else ""))
+    elif cmd.startswith("AT+MIPCALL="):
+        m = re.match(r"AT\+MIPCALL=(\d+),(\d+)", cmd)
         if not m:
             resp = at_error(50)
         else:

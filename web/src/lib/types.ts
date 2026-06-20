@@ -13,7 +13,26 @@ export interface ModemInfo {
   iccid_tail?: string
   apn?: string
   flight_mode?: number
+  /** @deprecated Compatibility alias; use data_connection_active. */
   pdp_active?: boolean
+  data_connection_active?: boolean
+  data_guard_ok?: boolean
+  data_guard_failures?: number
+  sms_rx_config_known?: boolean
+  sms_rx_config_ok?: boolean
+  sms_rx_last_check_ms?: number
+  sms_rx_last_config_ms?: number
+  sms_rx_recoveries?: number
+  sms_rx_failures?: number
+  /** 最近恢复触发原因:0=无,1=+MATREADY,2=+CPIN:READY,3=定时检查失败,4=定时刷新 */
+  sms_rx_last_recovery_reason?: number
+}
+
+/** 固件删除队列状态。 */
+export interface DeleteQueueInfo {
+  depth?: number
+  oldest_age_ms?: number
+  failures?: number
 }
 
 /** 设备本地短信缓冲。 */
@@ -34,6 +53,8 @@ export interface DeviceCounters {
 /** 设备状态快照（心跳/boot/hello 携带的完整 body）。 */
 export interface DeviceSnapshot {
   fw?: string
+  protocol_version?: number
+  capabilities?: number
   ip?: string
   uptime_s?: number
   free_heap?: number
@@ -46,6 +67,7 @@ export interface DeviceSnapshot {
   modem?: ModemInfo
   buffer?: BufferInfo
   counters?: DeviceCounters
+  delete_queue?: DeleteQueueInfo
 }
 
 export interface DeviceView {

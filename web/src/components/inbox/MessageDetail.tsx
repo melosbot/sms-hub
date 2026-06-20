@@ -51,8 +51,9 @@ export function MessageDetail({ id, onClose }: { id: number | null; onClose: () 
   const msg = q.data
   const [reply, setReply] = useState("")
 
-  // 打开（另一条）短信时清空回复草稿
+  // 打开（另一条）短信时清空回复草稿（切换 id 时通过 key 重置）
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- 切换短信时需要清空草稿
     if (id != null) setReply("")
   }, [id])
 

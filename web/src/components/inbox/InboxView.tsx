@@ -53,7 +53,7 @@ export function InboxView() {
   }, [qInput])
 
   const { data, isLoading, isFetching } = useMessages({ sim_id: "all", q, limit, offset: 0 })
-  const msgs = data?.messages ?? []
+  const msgs = useMemo(() => data?.messages ?? [], [data?.messages])
   const total = data?.total ?? 0
   const shown = useMemo(() => (onlyCode ? msgs.filter((m) => m.code) : msgs), [msgs, onlyCode])
   const delMany = useDeleteMessages()

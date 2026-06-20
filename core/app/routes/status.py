@@ -3,7 +3,6 @@ import json
 import time
 
 from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import Response
 from pydantic import BaseModel
 
 from core.app import auth
@@ -34,6 +33,8 @@ async def status(sim_id: str | None = None):
     mgr = device_manager.get()
     rt = mgr.get_runtime(mac) if mac else None
     device_obj = json.loads(dev["last_status_json"]) if dev and dev["last_status_json"] else {}
+    # 防御性过滤(§1.5):不信任 DB 历史快照已干净
+    device_obj["modem"] = client.sanitize_modem_block(device_obj.get("modem"))
     async with db.db().execute(
         "SELECT COUNT(*) AS n FROM messages WHERE sim_id=?", (sim_id,)
     ) as cur:
@@ -116,7 +117,12 @@ async def status_refresh(body: SimBody):
         **new_block,
         "modem": {**existing.get("modem", {}), **(new_block.get("modem") or {})},
     }
-    await db.update_device_status_snapshot(mac, json.dumps(merged, ensure_ascii=False), now)
+    # 脱敏后再持久化(§1.5):pull 响应的 modem 块可能含完整 imsi/iccid
+    await db.update_device_status_snapshot(
+        mac,
+        json.dumps(client.sanitize_device_snapshot(merged), ensure_ascii=False),
+        now,
+    )
     rt.last_status_ts = now
     await db.update_device_timestamps(mac, last_status_ts=now, commit=True)
     events.publish({"type": "device", "device_mac": mac, "online": True})
@@ -130,53 +136,6 @@ async def clear_buffer(body: SimBody):
     sim_id, mac, rt, _ = await _resolve_runtime(body.sim_id)
     n = await _device_call(rt, lambda: poller.clear_device_buffer(rt))
     return {"ok": True, "sim_id": sim_id, "device_mac": mac, "deleted": n}
-
-
-def _metric_label(value: str) -> str:
-    return value.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "")
-
-
-@router.get("/metrics")
-async def metrics():
-    """Prometheus-style metrics,带 device_mac / sim_id label(§6.6)。LAN-only。"""
-    mgr = device_manager.get()
-    lines = [
-        "# HELP sms_hub_device_reachable Device reachability snapshot.",
-        "# TYPE sms_hub_device_reachable gauge",
-    ]
-    for d in await db.list_all_devices():
-        live = manager.compute_liveness(d)
-        rt = mgr.get_runtime(d["mac"])
-        lbl = f'device_mac="{_metric_label(d["mac"])}",device_name="{_metric_label(d["name"])}"'
-        lines.append(f"sms_hub_device_reachable{{{lbl}}} {1 if live['overall_online'] else 0}")
-        lines.append(f"sms_hub_heartbeat_online{{{lbl}}} {1 if live['heartbeat_online'] else 0}")
-        lines.append(f"sms_hub_data_plane_online{{{lbl}}} {1 if live['data_plane_online'] else 0}")
-        lines.append(f"sms_hub_device_busy{{{lbl}}} {1 if (rt and rt.busy_operation()) else 0}")
-    async with db.db().execute(
-        "SELECT m.sim_id AS sim_id, s.name AS sim_name, COUNT(*) AS n"
-        " FROM messages m LEFT JOIN sims s ON s.sim_id=m.sim_id"
-        " GROUP BY m.sim_id"
-    ) as cur:
-        for r in await cur.fetchall():
-            lbl = f'sim_id="{_metric_label(r["sim_id"])}",sim_name="{_metric_label(r["sim_name"] or "")}"'
-            lines.append(f"sms_hub_messages_total{{{lbl}}} {r['n']}")
-    async with db.db().execute(
-        "SELECT status, COUNT(*) AS n FROM outbound GROUP BY status"
-    ) as cur:
-        for r in await cur.fetchall():
-            lines.append(
-                f'sms_hub_outbound_jobs{{status="{_metric_label(r["status"])}"}} {r["n"]}'
-            )
-    async with db.db().execute(
-        "SELECT channel, status, COUNT(*) AS n FROM notify_jobs GROUP BY channel,status"
-    ) as cur:
-        for r in await cur.fetchall():
-            lines.append(
-                "sms_hub_notify_jobs"
-                f'{{channel="{_metric_label(r["channel"])}",'
-                f'status="{_metric_label(r["status"])}"}} {r["n"]}'
-            )
-    return Response("\n".join(lines) + "\n", media_type="text/plain; version=0.0.4")
 
 
 class AtBody(BaseModel):

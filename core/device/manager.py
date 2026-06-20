@@ -16,6 +16,7 @@ from core.device import client
 from core.device import runtime as runtime_mod
 from core.infra import config
 from core.infra import db
+from core.notify import notifier
 
 log = logging.getLogger("device")
 
@@ -50,6 +51,8 @@ class DeviceManager:
         self.runtimes: dict[str, runtime_mod.DeviceRuntime] = {}
         self.io_sem = asyncio.Semaphore(config.MAX_DEVICE_IO_CONCURRENCY)
         self.hub_self: set[str] = hub_self if hub_self is not None else set()
+        # 连续恢复失败告警节流: mac → (last_alert_ts, last_alert_failures)
+        self._alert_state: dict[str, tuple[float, int]] = {}
 
     # ── 启动 ──
     async def load(self) -> None:
@@ -156,15 +159,20 @@ class DeviceManager:
         row = await db.get_device(mac)
         cursor = int(row["cursor"]) if row else 0
 
-        # 3) 状态快照(boot/hello/heartbeat 携带完整状态)
-        is_status_event = event in ("boot", "hello", "heartbeat") or bool(body.get("modem"))
-        if is_status_event:
-            await db.update_device_status_snapshot(mac, json.dumps(body, ensure_ascii=False), now, commit=True)
-
-        # 4) 派生/合并 sim_id(boot/hello/heartbeat 的 modem.imsi 为权威 hint)
+        # 3) 派生/合并 sim_id(boot/hello/heartbeat 的 modem.imsi 为权威 hint)
+        # 必须在状态快照持久化前完成:完整 IMSI 仅在此瞬时使用,之后即从快照中删除。
         modem = body.get("modem") or {}
         if modem.get("imsi"):
             await self.derive_and_merge_sim(mac, modem, commit=True)
+
+        # 4) 状态快照(boot/hello/heartbeat 携带完整状态,保存前脱敏)
+        is_status_event = event in ("boot", "hello", "heartbeat") or bool(modem)
+        if is_status_event:
+            await db.update_device_status_snapshot(
+                mac,
+                json.dumps(client.sanitize_device_snapshot(body), ensure_ascii=False),
+                now, commit=True,
+            )
 
         # 5) 运行时状态
         rt = await self.ensure_runtime(mac)
@@ -192,8 +200,46 @@ class DeviceManager:
                 self._schedule_pull(rt)
                 pull_scheduled = True
 
+        # 7) 能力协商(§3.4):首次发现或变更时记录设备能力
+        caps = client.device_capabilities(body)
+        if caps:
+            prev_caps = getattr(rt, "_seen_capabilities", 0)
+            if caps != prev_caps:
+                rt._seen_capabilities = caps
+                log.info("设备 %s capability: %s (协议版本 %d)",
+                         client.display_mac(mac),
+                         client.describe_capabilities(caps),
+                         client.device_protocol_version(body))
+
+        # 8) 连续恢复失败告警(§1.2):检测短信面静默失效
+        if is_status_event:
+            await self._check_device_alerts(mac, modem)
+
         log.debug("webhook mac=%s event=%s pull=%s", mac, event or "?", pull_scheduled)
         return {"ok": True, "pull_scheduled": pull_scheduled}
+
+    # ── 设备告警(§1.2):检测接收配置连续失败 ──
+    async def _check_device_alerts(self, mac: str, modem: dict) -> None:
+        """当短信接收配置连续恢复失败时向 Telegram 告警。
+        节流:同一设备间隔 <1h 且失败次数未增加时不重复告警。"""
+        ok = modem.get("sms_rx_config_ok")
+        failures = int(modem.get("sms_rx_failures") or 0)
+        if ok is not False and failures <= 0:
+            return
+        now = time.time()
+        last_ts, last_failures = self._alert_state.get(mac, (0, 0))
+        if now - last_ts < 3600 and failures <= last_failures:
+            return  # 节流或失败数未增长
+        self._alert_state[mac] = (now, failures)
+        recoveries = int(modem.get("sms_rx_recoveries") or 0)
+        reason = int(modem.get("sms_rx_last_recovery_reason") or 0)
+        reason_text = {1: "+MATREADY", 2: "+CPIN: READY", 3: "定时检查", 4: "定时刷新"}.get(reason, "未知")
+        await notifier.notify_telegram_direct(
+            f"⚠️ 设备 {client.display_mac(mac)} 短信接收配置异常\n"
+            f"状态: {'配置不匹配' if ok is False else '守护连续失败'}\n"
+            f"累计恢复 {recoveries} 次 · 失败 {failures} 次\n"
+            f"最近触发: {reason_text}",
+        )
 
     # ── 身份:sim_id 派生与临时卡合并(D3)──
     async def derive_and_merge_sim(self, mac: str, modem: dict, *, commit: bool = True) -> str:
