@@ -11,8 +11,8 @@
 
 ## Hub
 
-- [ ] Web ESLint 历史错误基线化后加入 CI 必过
-- [ ] 多版本 mock 设备同时接入测试
+- [x] Web ESLint 历史错误基线化后加入 CI 必过
+- [x] 多版本 mock 设备同时接入测试
 - [ ] 真机回归：完成 `docs/operations.md` 真机回归清单全部项目
 
 ## 第二阶段：异步 AT I/O（需真机）

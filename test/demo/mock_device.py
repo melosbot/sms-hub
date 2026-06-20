@@ -45,6 +45,7 @@ _background_tasks: set[asyncio.Task] = set()
 
 # ── Full-feature mock profile ──
 FW_VERSION = os.getenv("MOCK_FW_VERSION", "2.0.0-fullmock")
+PROTOCOL_VERSION = int(os.getenv("MOCK_PROTOCOL_VERSION", "1"))
 MANUFACTURER = os.getenv("MOCK_MANUFACTURER", "China Mobile IoT")
 MODEL = os.getenv("MOCK_MODEL", "ML307R-DC FULL MOCK")
 REVISION = os.getenv("MOCK_REVISION", "V2.0.0.FULLMOCK")
@@ -193,7 +194,7 @@ def status_payload() -> dict:
         "seq_id": SEQ_ID,
         "device_ts_ms": int(time.time() * 1000),
         "fw": FW_VERSION,
-        "protocol_version": 1,
+        "protocol_version": PROTOCOL_VERSION,
         "capabilities": 0x3F,  # bits 0-5: async_job|batch_delete|mipcall|watchdog|delete_queue|recovery_reason
         "heartbeat_interval_s": HEARTBEAT_INTERVAL_S,
         "uptime_s": int(uptime),

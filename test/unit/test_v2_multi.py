@@ -1,10 +1,12 @@
 """v2 多设备/多卡关键正确性测试。
 
 覆盖计划要求的硬约束:跨设备同编号不冲突、IMSI 派生与临时卡合并、
-墓碑按设备隔离、SSRF/MAC/sim_id 纯函数、sim_id 推断、全局并发池上限。
+墓碑按设备隔离、SSRF/MAC/sim_id 纯函数、sim_id 推断、全局并发池上限、
+多版本 mock 设备同时接入。
 """
 import asyncio
 import hashlib
+import json
 
 import pytest
 from fastapi import HTTPException
@@ -211,6 +213,123 @@ def test_resolve_sim_id_param_inference(monkeypatch, tmp_path):
             await db.close_db()
 
     asyncio.run(run())
+
+
+# ── 多版本 mock 设备同时接入 ──
+
+def test_mixed_fw_versions_preserved_in_status(monkeypatch, tmp_path):
+    """不同固件版本的设备同时接入,各自 fw/protocol_version 独立保存。"""
+    monkeypatch.setattr(config, "DB_PATH", tmp_path / "ver.db")
+
+    async def run():
+        await db.open_db()
+        try:
+            mac_a = "aabbccddeeff"
+            mac_b = "112233445566"
+
+            await db.upsert_device(mac_a, commit=True)
+            await db.upsert_device(mac_b, commit=True)
+
+            # 设备 A: 旧版固件
+            snap_a = {
+                "event": "heartbeat", "mac": mac_a,
+                "fw": "1.9.0", "protocol_version": 1,
+                "modem": {"ready": True, "imsi": "460001234567731", "imsi_tail": "7731"},
+                "buffer": {"latest_id": 0, "count": 0, "capacity": 50},
+            }
+            await db.update_device_status_snapshot(mac_a, json.dumps(snap_a), 1000000.0, commit=True)
+
+            # 设备 B: 新版固件
+            snap_b = {
+                "event": "heartbeat", "mac": mac_b,
+                "fw": "2.5.0-beta", "protocol_version": 2,
+                "modem": {"ready": True, "imsi": "234109876543210", "imsi_tail": "3210"},
+                "buffer": {"latest_id": 0, "count": 0, "capacity": 50},
+            }
+            await db.update_device_status_snapshot(mac_b, json.dumps(snap_b), 1000001.0, commit=True)
+
+            # 读取验证:各设备独立保留自己的版本
+            dev_a = await db.get_device(mac_a)
+            dev_b = await db.get_device(mac_b)
+
+            status_a = json.loads(dev_a["last_status_json"])
+            status_b = json.loads(dev_b["last_status_json"])
+
+            assert status_a["fw"] == "1.9.0"
+            assert client.device_protocol_version(status_a) == 1
+            assert status_b["fw"] == "2.5.0-beta"
+            assert client.device_protocol_version(status_b) == 2
+
+        finally:
+            await db.close_db()
+
+    asyncio.run(run())
+
+
+def test_mixed_protocol_versions_no_cross_contamination(monkeypatch, tmp_path):
+    """不同 protocol_version 的设备共存,状态不互相污染。"""
+    monkeypatch.setattr(config, "DB_PATH", tmp_path / "proto.db")
+
+    async def run():
+        await db.open_db()
+        try:
+            mac_a = "aabbccddeeff"
+            mac_b = "112233445566"
+
+            await db.upsert_device(mac_a, commit=True)
+            await db.upsert_device(mac_b, commit=True)
+
+            # 设备 A 上报 protocol_version=1(当前稳定版)
+            mgr = device_manager.DeviceManager(hub_self=set())
+            await mgr.handle_webhook({
+                "event": "heartbeat", "mac": mac_a,
+                "fw": "2.0.0", "protocol_version": 1,
+                "ip": "10.0.0.5", "port": 80,
+                "modem": {"ready": True, "imsi": "460001234567731", "imsi_tail": "7731"},
+                "buffer": {"latest_id": 5, "count": 2, "capacity": 50},
+            })
+
+            # 设备 B 上报 protocol_version=2(未来版本)
+            await mgr.handle_webhook({
+                "event": "heartbeat", "mac": mac_b,
+                "fw": "3.0.0-dev", "protocol_version": 2,
+                "ip": "10.0.0.6", "port": 80,
+                "modem": {"ready": True, "imsi": "234109876543210", "imsi_tail": "3210"},
+                "buffer": {"latest_id": 10, "count": 3, "capacity": 50},
+            })
+
+            # 各自状态独立
+            dev_a = await db.get_device(mac_a)
+            dev_b = await db.get_device(mac_b)
+
+            assert dev_a is not None and dev_b is not None
+            snap_a = json.loads(dev_a["last_status_json"])
+            snap_b = json.loads(dev_b["last_status_json"])
+
+            assert snap_a["fw"] == "2.0.0"
+            assert snap_a["protocol_version"] == 1
+            assert snap_a["buffer"]["latest_id"] == 5
+
+            assert snap_b["fw"] == "3.0.0-dev"
+            assert snap_b["protocol_version"] == 2
+            assert snap_b["buffer"]["latest_id"] == 10
+
+            # 设备列表同时包含两台设备
+            devices = await db.list_all_devices()
+            assert len(devices) >= 2
+
+        finally:
+            await db.close_db()
+
+    asyncio.run(run())
+
+
+def test_device_protocol_version_defaults():
+    """未上报 protocol_version 时返回 0(无版本)。"""
+    assert client.device_protocol_version({}) == 0
+    assert client.device_protocol_version({"protocol_version": "1"}) == 1
+    assert client.device_protocol_version({"protocol_version": 0}) == 0
+    assert client.device_protocol_version({"protocol_version": None}) == 0
 
 
 # ── 全局设备 I/O 并发池上限 ──
