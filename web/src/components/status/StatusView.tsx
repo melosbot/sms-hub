@@ -233,19 +233,9 @@ function StatusBody({ simId, multiple }: { simId: string; multiple: boolean }) {
                     label="收信配置"
                     value={
                       modem?.sms_rx_config_ok === true
-                        ? `正常（恢复 ${modem.sms_rx_recoveries ?? 0} 次）`
+                        ? `正常（重配 ${modem.sms_rx_recoveries ?? 0} 次）`
                         : modem?.sms_rx_config_known === false
-                          ? "检查或恢复中"
-                          : "—"
-                    }
-                  />
-                  <Stat
-                    label="删除队列"
-                    value={
-                      device?.delete_queue?.depth
-                        ? `${device.delete_queue.depth} 条待删（失败 ${device.delete_queue.failures ?? 0} 次）`
-                        : device?.delete_queue?.failures
-                          ? `失败 ${device.delete_queue.failures} 次`
+                          ? "检查或重配中"
                           : "—"
                     }
                   />
