@@ -1,9 +1,10 @@
 # 构建 Docker 镜像并发布到 GitHub Container Registry (ghcr.io)。
-# 触发:push 到 main 分支、打 v* tag、或手动 workflow_dispatch。
+# 触发:push 到 main/dev 分支、打 v* tag、或手动 workflow_dispatch。
 # 镜像:ghcr.io/<owner>/<repo>,多架构(linux/amd64 + linux/arm64,homelab 树莓派/NUC 友好)。
 #
 # 用法:
-#   - push main → 构建 :latest + :sha
+#   - push main → 构建 :latest + :main + :sha
+#   - push dev → 构建 :dev + :sha
 #   - git tag v1.2.3 && push → 额外打 :1.2.3 / :1.2 / :1
 #   - 首次发布后,到 GitHub → Packages → 该 package → settings 把可见性设为 public(否则拉取需登录)
 #   - 拉取:docker pull ghcr.io/<owner>/<repo>:latest
@@ -14,7 +15,7 @@ name: Build and publish Docker image
 
 on:
   push:
-    branches: [main]
+    branches: [main, dev]
     tags: ['v*']
   workflow_dispatch:        # 手动触发(可在 Actions 页指定分支)
 
