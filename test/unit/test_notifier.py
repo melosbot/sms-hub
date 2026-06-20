@@ -30,10 +30,9 @@ def test_format_incoming_markdown_layout():
         "text": "您的验证码是 114514",
     })
 
-    # 验证码挂在标题右侧(反引号 code,可一点即复制)
-    assert out.startswith("📥 *新短信*")
-    assert "🔐 `114514`" in out
-    assert "发件人：*13800138000*" in out
+    # 验证码独立一行，反引号 code 可一点即复制
+    assert out.startswith("📥 *新短信*\n发件人：*13800138000*")
+    assert "验证码：`114514`" in out
     assert "时　间：2026-06-14 10:00" in out
     assert out.endswith("您的验证码是 114514")
     # Markdown 模式不应出现 HTML 标签
@@ -56,9 +55,9 @@ def test_format_incoming_without_code():
         "received_at": "2026-06-14 10:00",
         "text": "欠费提醒",
     })
-    # 无验证码:标题不带 🔐 标记
+    # 无验证码:标题后直接跟发件人行
     assert "🔐" not in out
-    assert out.startswith("📥 *新短信*\n\n")
+    assert out.startswith("📥 *新短信*\n发件人：*10086*")
     assert out.endswith("欠费提醒")
 
 

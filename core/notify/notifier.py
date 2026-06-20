@@ -185,10 +185,11 @@ def _format_delivery_error(e: Exception) -> str:
 
 def _plain_incoming(m: dict) -> str:
     """纯文本新短信通知(短信转发、钉钉、飞书等通道共用)。"""
-    lines = ["📥 新短信", f"发件人：{m['sender']}"]
+    lines = ["📥 新短信"]
+    lines.append(f"发件人：{m['sender']}")
     if m.get("code"):
         lines.append(f"验证码：{m['code']}")
-    lines.append(f"时间：{m['received_at']}")
+    lines.append(f"时　间：{m['received_at']}")
     lines.append("")
     lines.append(m["text"])
     return "\n".join(lines)
@@ -196,15 +197,13 @@ def _plain_incoming(m: dict) -> str:
 
 def format_incoming(m: dict) -> str:
     """Telegram 新短信通知(Markdown)。"""
-    title = "📥 *新短信*"
+    lines = ["📥 *新短信*"]
+    lines.append(f"发件人：*{_md(m['sender'])}*")
     if m.get("code"):
-        title += f"　🔐 `{m['code']}`"
-    lines = [
-        title, "",
-        f"发件人：*{_md(m['sender'])}*",
-        f"时　间：{_md(m['received_at'])}",
-        "", _md(m["text"]),
-    ]
+        lines.append(f"验证码：`{m['code']}`")
+    lines.append(f"时　间：{_md(m['received_at'])}")
+    lines.append("")
+    lines.append(_md(m["text"]))
     return "\n".join(lines)
 
 
