@@ -22,3 +22,6 @@
 #define MY_MSISDN  ""
 
 #define FW_VERSION  "2.0.0"
+// 设备协议版本(递增整数)；能力位掩码:1=async_job,2=batch_delete,4=mipcall,8=sms_rx_watchdog,16=delete_queue_stat,32=recovery_reason
+#define DEVICE_PROTOCOL_VERSION 1
+#define DEVICE_CAPABILITIES 63
