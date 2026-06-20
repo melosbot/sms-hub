@@ -4,8 +4,14 @@ name: CI
 
 on:
   push:
+    paths:
+      - 'core/**'
+      - 'web/**'
   pull_request:
     branches: [main, dev]
+    paths:
+      - 'core/**'
+      - 'web/**'
   workflow_dispatch:
 
 jobs:

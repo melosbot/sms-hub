@@ -1,6 +1,6 @@
 # 构建 Docker 镜像并发布到 GitHub Container Registry (ghcr.io)。
 # 触发:push 到 main/dev 分支、打 v* tag、或手动 workflow_dispatch。
-# 镜像:ghcr.io/<owner>/<repo>,多架构(linux/amd64 + linux/arm64,homelab 树莓派/NUC 友好)。
+# 镜像:ghcr.io/<owner>/<repo>,多架构(linux/amd64 + linux/arm64)。
 #
 # 用法:
 #   - push main → 构建 :latest + :main + :sha
@@ -16,6 +16,9 @@ name: Build and publish Docker image
 on:
   push:
     branches: [main, dev]
+    paths:
+      - 'core/**'
+      - 'web/**'
     tags: ['v*']
   workflow_dispatch:        # 手动触发(可在 Actions 页指定分支)
 

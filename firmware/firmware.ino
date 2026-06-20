@@ -63,6 +63,15 @@
 #ifndef MY_MSISDN
 #define MY_MSISDN ""                  // 本机号码(选填);config.h 未定义时留空→AT+CNUM 兜底
 #endif
+#ifndef FW_VERSION
+#define FW_VERSION "2.0.0"            // 固件版本号(展示用);config.h 可覆盖
+#endif
+#ifndef DEVICE_PROTOCOL_VERSION
+#define DEVICE_PROTOCOL_VERSION 1     // 设备协议版本;config.h 可覆盖
+#endif
+#ifndef DEVICE_CAPABILITIES
+#define DEVICE_CAPABILITIES 63        // 能力位掩码(all enabled);config.h 可覆盖
+#endif
 #define MAX_DIAG_TEXT_LENGTH 96
 #define AT_PROXY_MAX_TIMEOUT_MS 15000
 
