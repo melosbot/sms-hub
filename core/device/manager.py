@@ -224,7 +224,8 @@ class DeviceManager:
         节流:同一设备间隔 <1h 且失败次数未增加时不重复告警。"""
         ok = modem.get("sms_rx_config_ok")
         failures = int(modem.get("sms_rx_failures") or 0)
-        if ok is not False and failures <= 0:
+        # 有实际失败才告警; config_ok=false 但 failures=0 只是重配间隙的瞬态
+        if failures <= 0:
             return
         now = time.time()
         last_ts, last_failures = self._alert_state.get(mac, (0, 0))
@@ -236,8 +237,7 @@ class DeviceManager:
         reason_text = {1: "+MATREADY", 2: "+CPIN: READY", 3: "定时检查", 4: "定时刷新"}.get(reason, "未知")
         await notifier.notify_telegram_direct(
             f"⚠️ 设备 {client.display_mac(mac)} 短信接收配置异常\n"
-            f"状态: {'配置不匹配' if ok is False else '守护连续失败'}\n"
-            f"累计恢复 {recoveries} 次 · 失败 {failures} 次\n"
+            f"重配失败 {failures} 次（共重配 {recoveries} 次）\n"
             f"最近触发: {reason_text}",
         )
 
