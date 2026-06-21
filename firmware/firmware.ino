@@ -24,7 +24,7 @@
 #endif
 
 #define MODEM_INIT_ATTEMPTS 12
-#define MODEM_NETWORK_WAIT_MS 60000
+#define MODEM_NETWORK_WAIT_MS 180000  // 漫游卡搜网可能需要 2-3 分钟
 #define WIFI_CONNECT_WAIT_MS 45000
 #define SERIAL_RX_BUFFER_SIZE 4096
 #define MODEM_LINE_BUFFER_SIZE 768
@@ -45,7 +45,10 @@
 #define SMS_RX_CONFIG_RETRY_MS 30000UL
 #define SMS_RX_PDU_COMMAND "AT+CMGF=0"
 #define SMS_RX_STORAGE_COMMAND "AT+CPMS=\"SM\",\"SM\",\"SM\""
+#define SMS_RX_STORAGE_COMMAND_ME "AT+CPMS=\"ME\",\"ME\",\"ME\""
+#define SMS_RX_STORAGE_COMMAND_MT "AT+CPMS=\"MT\",\"MT\",\"MT\""
 #define SMS_RX_NOTIFY_COMMAND "AT+CNMI=2,1,0,0,0"
+#define SMS_RX_STORAGE_FAIL_STREAK_MAX 5  // Storage 连续失败此数后熔断跳过
 
 #define SMS_SINGLE_PART_CHAR_LIMIT 70 // UCS2 单段上限
 #define SMS_SPLIT_PART_CHAR_LIMIT 60  // 分段时每段上限
@@ -130,6 +133,8 @@ unsigned long smsRxLastCheckMs = 0;
 unsigned long smsRxLastConfigMs = 0;
 uint32_t smsRxRecoveryCount = 0;
 uint32_t smsRxFailureCount = 0;
+uint32_t smsRxConsecutiveStorageFails = 0;  // Storage 步骤熔断计数器
+const char* smsRxActiveStorageCmd = nullptr; // 初始化成功过的 CPMS 命令,恢复时优先复用
 // 最近一次接收配置恢复触发原因:0=无,1=+MATREADY,2=+CPIN:READY,3=定时检查失败,4=定时刷新重配
 uint8_t smsRxLastRecoveryReason = 0;
 bool dataGuardSatisfied = false;
@@ -697,9 +702,24 @@ void maintainSmsRxConfig() {
     case SmsRxRecoveryStep::PduMode:
       ok = sendATandWaitOK(SMS_RX_PDU_COMMAND, 2000);
       break;
-    case SmsRxRecoveryStep::Storage:
-      ok = sendATandWaitOK(SMS_RX_STORAGE_COMMAND, 3000);
+    case SmsRxRecoveryStep::Storage: {
+      // 优先复用初始化成功的存储命令;否则降级尝试 SM→ME→MT
+      if (smsRxActiveStorageCmd) {
+        ok = sendATandWaitOK(smsRxActiveStorageCmd, 3000);
+      }
+      if (!ok) {
+        static const char* targets[] = {
+          SMS_RX_STORAGE_COMMAND,
+          SMS_RX_STORAGE_COMMAND_ME,
+          SMS_RX_STORAGE_COMMAND_MT,
+        };
+        for (int t = 0; t < 3 && !ok; t++) {
+          ok = sendATandWaitOK(targets[t], 3000);
+          if (ok) smsRxActiveStorageCmd = targets[t];
+        }
+      }
       break;
+    }
     case SmsRxRecoveryStep::NotifyMode:
       ok = sendATandWaitOK(SMS_RX_NOTIFY_COMMAND, 2000);
       break;
@@ -723,6 +743,17 @@ void maintainSmsRxConfig() {
   if (!ok) {
     smsRxFailureCount++;
     smsRxConfigOk = false;
+    // Storage 步骤熔断: 连续失败 SMS_RX_STORAGE_FAIL_STREAK_MAX 次后跳过
+    if (executing == SmsRxRecoveryStep::Storage) {
+      smsRxConsecutiveStorageFails++;
+      if (smsRxConsecutiveStorageFails >= SMS_RX_STORAGE_FAIL_STREAK_MAX) {
+        Serial.println("短信存储设置连续失败,熔断跳过");
+        smsRxConsecutiveStorageFails = 0;
+        smsRxRecoveryStep = SmsRxRecoveryStep::NotifyMode;
+        smsRxNextActionMs = now;
+        return;
+      }
+    }
     smsRxRecoveryStep = SmsRxRecoveryStep::PduMode;
     smsRxNextActionMs = now + SMS_RX_CONFIG_RETRY_MS;
     recordLastError("短信接收配置恢复失败");
@@ -741,6 +772,7 @@ void maintainSmsRxConfig() {
     smsRxConfigOk = true;
     smsRxLastConfigMs = now;
     smsRxRecoveryCount++;
+    smsRxConsecutiveStorageFails = 0;  // 恢复成功,重置熔断计数器
     smsRxNextRefreshMs = now + SMS_RX_CONFIG_REFRESH_MS;
     smsRxNextStatusMs = now + SMS_RX_STATUS_QUERY_MS;
     Serial.printf("短信接收配置恢复完成(累计 %lu 次)\n",
@@ -1050,6 +1082,31 @@ bool retryATStep(const char* cmd, unsigned long timeout, const char* retryMsg, c
     }
     Serial.println(retryMsg);
     blink_short();
+  }
+  Serial.println("初始化步骤失败,继续启动");
+  return false;
+}
+
+// CPMS 降级: SM → ME → MT。ML307R 部分固件版本不支持 SIM 卡存储。
+// 成功则记录到 smsRxActiveStorageCmd 供恢复状态机复用。
+bool tryStorageCommand(unsigned long timeout, int attemptsPerTarget) {
+  static const char* targets[] = {
+    SMS_RX_STORAGE_COMMAND,
+    SMS_RX_STORAGE_COMMAND_ME,
+    SMS_RX_STORAGE_COMMAND_MT,
+  };
+  for (int t = 0; t < 3; t++) {
+    for (int i = 0; i < attemptsPerTarget; i++) {
+      if (sendATandWaitOK(targets[t], timeout)) {
+        smsRxActiveStorageCmd = targets[t];
+        Serial.print("短信存储设置完成 (");
+        Serial.print(targets[t]);
+        Serial.println(")");
+        return true;
+      }
+      Serial.println("设置短信存储失败,重试...");
+      blink_short();
+    }
   }
   Serial.println("初始化步骤失败,继续启动");
   return false;
@@ -2383,7 +2440,7 @@ void setup() {
   dataGuardNextAttemptMs = millis() + 60000UL;
   if (!dataGuardSatisfied) Serial.println("关闭 MIPCALL 数据连接失败,后台继续重试");
   bool pduModeOk = retryATStep(SMS_RX_PDU_COMMAND, 1000, "设置PDU模式失败,重试...", "PDU模式设置完成");
-  bool storageOk = retryATStep(SMS_RX_STORAGE_COMMAND, 2000, "设置短信存储失败,重试...", "短信存储设置完成");
+  bool storageOk = tryStorageCommand(2000, MODEM_INIT_ATTEMPTS / 3);
   bool cnmiOk = retryATStep(SMS_RX_NOTIFY_COMMAND, 1000, "设置CNMI失败,重试...", "CNMI存储通知模式设置完成");
   modemInitOk = atOk && pduModeOk && storageOk && cnmiOk;
   modemInitDone = true;
