@@ -233,10 +233,12 @@ function StatusBody({ simId, multiple }: { simId: string; multiple: boolean }) {
                     label="收信配置"
                     value={
                       modem?.sms_rx_config_ok === true
-                        ? `正常（重配 ${modem.sms_rx_recoveries ?? 0} 次）`
-                        : modem?.sms_rx_config_known === false
-                          ? "检查或重配中"
-                          : "—"
+                        ? "正常"
+                        : (modem?.sms_rx_failures ?? 0) > 0
+                          ? `重配失败 ${modem?.sms_rx_failures} 次`
+                          : modem?.sms_rx_config_known === false
+                            ? "检查或重配中"
+                            : "—"
                     }
                   />
                   <Stat label="运行时长" value={formatUptime(device?.uptime_s)} />
